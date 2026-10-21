@@ -7,7 +7,6 @@
 #include "libc_format.h"
 #include "libc_mspace.h"
 #include <errno.h>
-#include <intrin.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -128,10 +127,18 @@ static double GUEST_ABI g_powidf2(double a, int b) {
     return reciprocal ? 1 / r : r;
 }
 static float GUEST_ABI g_powisf2(float a, int b) { return (float)g_powidf2(a, b); }
+// (high:low) / divisor with high < divisor, so the quotient fits: one DIV instruction. A plain
+// 128-bit division would call compiler-rt's __udivti3, which is not linked.
+static uint64_t divide_128_by_64(uint64_t high, uint64_t low, uint64_t divisor) {
+    uint64_t quotient, remainder;
+    __asm__("divq %4" : "=a"(quotient), "=d"(remainder) : "a"(low), "d"(high), "rm"(divisor));
+    (void)remainder;
+    return quotient;
+}
 static unsigned __int128 GUEST_ABI g_udivti3(unsigned __int128 n, unsigned __int128 d) {
     if (!(d >> 64)) {
-        uint64_t divisor = (uint64_t)d, high = (uint64_t)(n >> 64), rest;
-        uint64_t low = _udiv128(high % divisor, (uint64_t)n, divisor, &rest);
+        uint64_t divisor = (uint64_t)d, high = (uint64_t)(n >> 64);
+        uint64_t low = divide_128_by_64(high % divisor, (uint64_t)n, divisor);
         return ((unsigned __int128)(high / divisor) << 64) | low;
     }
     unsigned __int128 q = 0, r = 0;
