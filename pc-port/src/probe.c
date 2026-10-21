@@ -160,7 +160,17 @@ static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// Ctrl+C or Ctrl+Break: describe every guest thread, then exit, so a hang shows who waits where.
+static BOOL WINAPI console_break(DWORD event) {
+    if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT) return FALSE;
+    fputs("HANG_REPORT begin\n", stderr);
+    runtime_report_threads();
+    fputs("HANG_REPORT end\n", stderr);
+    fflush(NULL);
+    ExitProcess(130);
+}
 int main(int argc, char **argv) {
+    SetConsoleCtrlHandler(console_break, TRUE);
     setvbuf(stdout,NULL,_IONBF,0);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     if (argc != 3 || (strcmp(argv[2], "--map-only") && strcmp(argv[2], "--entry"))) {

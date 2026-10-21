@@ -18,6 +18,9 @@ uintptr_t runtime_resolve(const char *identity, int data);
 // ISS_TRACE_MSPACE=1: wraps the bound libc.prx sceLibcMspaceMemalign/Reallocalign to log large
 // requests and failures with the calling eboot offset. Returns the wrapper, or 0 to keep the export.
 uintptr_t runtime_wrap_binding(const char *identity, uintptr_t native);
+void runtime_report_thread(const char *name, DWORD tid, const CONTEXT *c);
+// Prints every guest thread's position (the probe calls it on Ctrl+C).
+void runtime_report_threads(void);
 int runtime_emulate_tls(EXCEPTION_POINTERS *exception);
 uint64_t runtime_tls_fault_count(void);
 uintptr_t sync_resolve(const char *identity);

@@ -182,6 +182,23 @@ static int32_t GUEST_ABI once(volatile int32_t *state, void (GUEST_ABI *init)(vo
     WakeAllConditionVariable(&once_done);
     return 0;
 }
+// Ctrl+C hang report: suspends each guest thread and describes where it is.
+void runtime_report_threads(void) {
+    AcquireSRWLockShared(&registry);
+    for (Thread *t = threads; t; t = t->next) {
+        if (t->id == GetCurrentThreadId()) continue;
+        HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, t->id);
+        if (!h) continue;
+        DWORD code = 0;
+        if (GetExitCodeThread(h, &code) && code == STILL_ACTIVE && SuspendThread(h) != (DWORD)-1) {
+            CONTEXT c; memset(&c, 0, sizeof(c)); c.ContextFlags = CONTEXT_FULL;
+            if (GetThreadContext(h, &c)) runtime_report_thread(t->name, t->id, &c);
+        }
+        CloseHandle(h);
+    }
+    ReleaseSRWLockShared(&registry);
+    fflush(stderr);
+}
 uintptr_t thread_resolve(const char *identity) {
     if (!strstr(identity,"#libkernel#1#libkernel#257")) return 0;
     const char *api = runtime_api_name(identity);
