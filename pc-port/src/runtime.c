@@ -126,14 +126,15 @@ static int GUEST_ABI guest_memcmp(const void *p,const void *s,uint64_t n){return
 static uint64_t GUEST_ABI guest_strlen(const char *p){return strlen(p);}
 static int GUEST_ABI guest_strcmp(const char *p,const char *s){return strcmp(p,s);}
 static int GUEST_ABI guest_strncmp(const char *p,const char *s,uint64_t n){return strncmp(p,s,(size_t)n);}
+static void GUEST_ABI guest_stack_chk_fail(void){stop("guest stack smashing detected");}
 static int GUEST_ABI guest_neo_mode(void){const char *mode=getenv("ISS_NEO_MODE");return mode&&atoi(mode)==1;}
 
 uintptr_t runtime_resolve(const char *identity, int data) {
     if (data) {
         if (!strcmp(identity, "f7uOxY9mM1U#libkernel#1#libkernel#257")) return (uintptr_t)&canary;
-        return 0;
+        return libc_resolve_data(identity);
     }
-    if(strstr(identity,"#libSceLibcInternal#1#libSceLibcInternal#257")){
+    if(strstr(identity,"#libSceLibcInternal#1#libSceLibcInternal#257")||strstr(identity,"#libc#1#libc#257")){
         const char *api=runtime_api_name(identity);
         if(!strcmp(api,"memset"))return (uintptr_t)guest_memset;
         if(!strcmp(api,"memcpy"))return (uintptr_t)guest_memcpy;
@@ -146,13 +147,15 @@ uintptr_t runtime_resolve(const char *identity, int data) {
     if (!strcmp(identity, "vNe1w4diLCs#libkernel#1#libkernel#257")) return (uintptr_t)guest_tls_get_addr;
     if (!strcmp(runtime_api_name(identity), "__error") || !strcmp(runtime_api_name(identity), "__errno_location")) return (uintptr_t)runtime_errno;
     if (!strcmp(identity, "959qrazPIrg#libkernel#1#libkernel#257")) return (uintptr_t)guest_procparam;
+    if (!strcmp(runtime_api_name(identity), "__stack_chk_fail")) return (uintptr_t)guest_stack_chk_fail;
     if (!strcmp(runtime_api_name(identity),"sceKernelIsNeoMode")) return (uintptr_t)guest_neo_mode;
     if (!strcmp(identity, "p5EcQeEeJAE#libkernel#1#libkernel#257")) return (uintptr_t)guest_set_heap_api;
     if (!strcmp(identity, "NWtTN10cJzE#libSceLibcInternalExt#1#libSceLibcInternal#257")) return (uintptr_t)guest_heap_trace_info;
     if (!strcmp(identity, "pO96TwzOm5E#libkernel#1#libkernel#257")) return (uintptr_t)memory_direct_size;
     if (!strcmp(identity, "rTXw65xmLIA#libkernel#1#libkernel#257")) return (uintptr_t)memory_allocate_direct;
     if (!strcmp(identity, "L-Q3LEjIbgA#libkernel#1#libkernel#257")) return (uintptr_t)memory_map_direct;
-    uintptr_t fn = sync_resolve(identity);
+    uintptr_t fn = libc_resolve(identity);
+    if (!fn) fn = sync_resolve(identity);
     if (!fn) fn = thread_resolve(identity);
     if (!fn) fn = time_resolve(identity);
     if (!fn) fn = file_resolve(identity);

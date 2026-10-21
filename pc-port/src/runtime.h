@@ -40,6 +40,10 @@ int gpu_dialog_poll(void *result);
 void gpu_dialog_close(void);
 int gpu_dialog_active(void);
 int runtime_file_mount(unsigned slot,const char *guest,const char *host,int readonly);
+// Maps a PS4 path (/app0/..., /temp0/...) to a host path; 0 or a PS4 errno.
+int runtime_file_translate(const char *guest,char *host,size_t size,int write);
+uintptr_t libc_resolve(const char *identity);
+uintptr_t libc_resolve_data(const char *identity);
 void runtime_file_unmount(unsigned slot);
 void *memory_allocate_image(uint64_t size);
 void memory_register_image(uint64_t offset,uint64_t size,uint32_t flags);

@@ -32,6 +32,7 @@ def build(output=None):
     shutil.copy2(ROOT.parent/'build-sdl/SDL3.dll',out/'SDL3.dll')
     from content_profile import create
     create()
+    subprocess.run([str(CLANG),'/nologo','/c',str(ROOT/'src/libc_varargs.S'),f'/Fo:{out / "libc_varargs.obj"}'],cwd=out,env=env,check=True)
     native_objects=[]
     for name in ('reduction','feedback_identity','hooks','geometry','geometry_hook','engine_draw'):
         obj=out/f'native-{name}.obj'
@@ -49,14 +50,8 @@ def build(output=None):
                     native_objects[1],str(feedback_stub),str(feedback_test_stub),
                     f'/Fe:{out / "feedback-identity-abi-test.exe"}'],cwd=out,env=env,check=True)
     subprocess.run([str(out/'feedback-identity-abi-test.exe')],cwd=out,check=True,timeout=15)
-    boot=(out/'boot-linked.bin').read_bytes()
-    image_size=json.loads((out/'link.json').read_text(encoding='utf-8'))['image_size']
-    start=len(boot)-image_size+0x171610
-    (out/'reduction-original.bin').write_bytes(boot[start:start+644])
-    subprocess.run([str(CLANG),'/std:c++20','/EHsc','/W4','/WX','/O2','/MD','/arch:AVX2','/fp:precise','/D_CRT_SECURE_NO_WARNINGS','/clang:-fuse-ld=lld',str(ROOT/'tests/native_reduction_test.cpp'),native_objects[0],f'/Fe:{out / "native-reduction-test.exe"}'],cwd=out,env=env,check=True)
-    subprocess.run([str(out/'native-reduction-test.exe')],cwd=out,check=True,timeout=15)
-    from test_native_geometry import run as test_native_geometry
-    test_native_geometry()
+    # The inFAMOUS native reduction and geometry parity tests compare against inFAMOUS eboot
+    # bytes; they do not apply to this game.
     symbols = {}
     with (out / 'linked-imports.csv').open(encoding='utf-8-sig') as f:
         for row in csv.DictReader(f):
@@ -71,7 +66,8 @@ def build(output=None):
            f'/I{ROOT.parent / "research/shadPS4-perf/externals/zydis/include"}',
            f'/I{ROOT.parent / "research/shadPS4-perf/externals/zydis/dependencies/zycore/include"}',
            f'/I{ROOT.parent / "research/shadPS4-perf/externals/sdl3/include"}',
-           *[str(ROOT / 'src' / name) for name in ('probe.c','runtime.c','memory.c','sync.c','kernel_sync.c','threads.c','time.c','files.c','services.c','dialogs.c','save_dialog.c','np.c','network.c','http.c','saves.c','trophies.c','pad.c','pad_panel.c','audio.c','gpu.c')],
+           *[str(ROOT / 'src' / name) for name in ('probe.c','runtime.c','memory.c','sync.c','kernel_sync.c','threads.c','time.c','files.c','services.c','dialogs.c','save_dialog.c','np.c','network.c','http.c','saves.c','trophies.c','pad.c','pad_panel.c','audio.c','gpu.c','libc.c','libc_format.c','libc_mspace.c')],
+           str(out / 'libc_varargs.obj'),
            str(ROOT.parent/'build-sdl/SDL3.lib'),
            *native_objects,
            str(ROOT.parent / 'build-opt/externals/zydis/Zydis.lib'),
@@ -106,6 +102,10 @@ def build(output=None):
     search_cmd[search_cmd.index(f'/Fe:{out / "runtime-test.exe"}')]=f'/Fe:{out / "save-search-test.exe"}'
     subprocess.run(search_cmd,cwd=out,env=env,check=True)
     subprocess.run([str(out/'save-search-test.exe')],cwd=out,check=True,timeout=10)
+    subprocess.run([str(CLANG),'/TC','/std:c11','/W4','/WX','/O2','/MD','/clang:-fuse-ld=lld','/D_CRT_SECURE_NO_WARNINGS',
+                    str(ROOT/'tests/libc_portable_test.c'),str(ROOT/'src/libc_format.c'),str(ROOT/'src/libc_mspace.c'),
+                    str(out/'libc_varargs.obj'),f'/Fe:{out/"libc-portable-test.exe"}'],cwd=out,env=env,check=True)
+    subprocess.run([str(out/'libc-portable-test.exe')],cwd=out,check=True,timeout=30)
     subprocess.run([str(CLANG),'/std:c++20','/EHsc','/W4','/WX','/O2','/MD','/clang:-fuse-ld=lld',str(ROOT/'tests/readback_hint_test.cpp'),f'/Fe:{out / "readback-hint-test.exe"}'],cwd=out,env=env,check=True)
     subprocess.run([str(out/'readback-hint-test.exe')],cwd=out,check=True,timeout=10)
 

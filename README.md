@@ -15,14 +15,17 @@ The game identity lives in `pc-port/scripts/game_id.py` and `pc-port/src/game.h`
 ## Differences from the inFAMOUS port
 
 - Ghost of Tsushima ships no `sce_module/*.prx`. inFAMOUS ran its bundled libc and Fios2;
-  here the ~120 libc imports have to be implemented by the runtime.
+  here the runtime implements all 120 libc imports: `libc.c` (host CRT wrappers),
+  `libc_format.c` + `libc_varargs.S` (printf/scanf over SysV argument lists) and
+  `libc_mspace.c` (sceLibcMspace allocators inside the game's memory ranges).
+  `tests/libc_portable_test.c` also runs on Linux.
 - The inFAMOUS native hooks (`pc-port/native/`) patch inFAMOUS code addresses and are not installed.
 - The inFAMOUS shader packs, recipes and profiling scripts are kept for reference but do not apply.
 
 ## Roadmap
 
 1. ~~Retarget identity checks, launcher and save paths~~
-2. libc replacement, plus offline stubs for PSN, VoiceQoS, streaming and screenshots
+2. ~~libc replacement~~ (`pc-port/src/libc*.c`, untested on Windows); offline stubs for PSN, VoiceQoS, streaming and screenshots
 3. Build on Windows; run to the first unimplemented call
 4. Audio3d, Rtc, the remaining kernel services
 5. Renderer bring-up

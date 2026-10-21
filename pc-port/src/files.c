@@ -81,6 +81,7 @@ static int translate(const char *path,char *out,size_t size,int write) {
     for(char *p=out;*p;++p) if(*p=='/') *p='\\';
     return 0;
 }
+int runtime_file_translate(const char *guest,char *host,size_t size,int write){return translate(guest,host,size,write);}
 const char *runtime_user_root(void){InitOnceExecuteOnce(&initialize_once,initialize,NULL,NULL);return user_root;}
 const char *runtime_save_root(void){InitOnceExecuteOnce(&initialize_once,initialize,NULL,NULL);return save_root;}
 int runtime_file_mount(unsigned slot,const char *guest,const char *host,int readonly){
