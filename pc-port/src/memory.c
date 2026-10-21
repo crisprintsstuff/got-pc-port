@@ -66,7 +66,10 @@ static void register_mapping(uint64_t address,uint64_t size,unsigned char *shado
 uint64_t memory_mapping_lock_shared(void){AcquireSRWLockShared(&memory_lock);return mapping_epoch;}
 void memory_mapping_unlock_shared(void){ReleaseSRWLockShared(&memory_lock);}
 uint64_t memory_mapping_epoch(void){uint64_t epoch=memory_mapping_lock_shared();memory_mapping_unlock_shared();return epoch;}
+static int arena_available(void);
 void *memory_allocate_image(uint64_t size){
+    // Reserve the guest arena before the GPU driver or anything else can take addresses in it.
+    AcquireSRWLockExclusive(&memory_lock);arena_available();ReleaseSRWLockExclusive(&memory_lock);
     size=round_up(size,65536);
     HANDLE section=CreateFileMappingW(INVALID_HANDLE_VALUE,NULL,PAGE_EXECUTE_READWRITE,0,(DWORD)size,NULL);
     if(!section)return NULL;
@@ -215,6 +218,81 @@ int32_t GUEST_ABI memory_allocate_direct(int64_t start, int64_t end, uint64_t le
     return 0;
 }
 
+// ---- guest address arena -------------------------------------------------------------------
+// The PS4 maps memory in 16 KiB pages; a plain Windows view starts on 64 KiB, so consecutive
+// 16 KiB mappings collided (the second one failed). Like shadPS4, the guest range is reserved as
+// one placeholder and every mapping is split out of it at page granularity and replaced by a view
+// with MapViewOfFile3 (Windows 10 1803+). Called with memory_lock held. Mappings never leave the
+// arena (unmap keeps them), so the used list only grows.
+#define ARENA_START UINT64_C(0x400000000)   // 16 GiB
+#define ARENA_END UINT64_C(0x10000000000)   // 1 TiB, inside the GPU's 40-bit range
+#ifndef MEM_RESERVE_PLACEHOLDER
+#define MEM_RESERVE_PLACEHOLDER 0x00040000
+#endif
+#ifndef MEM_REPLACE_PLACEHOLDER
+#define MEM_REPLACE_PLACEHOLDER 0x00004000
+#endif
+#ifndef MEM_PRESERVE_PLACEHOLDER
+#define MEM_PRESERVE_PLACEHOLDER 0x00000002
+#endif
+typedef void *(WINAPI *VirtualAlloc2Fn)(HANDLE, void *, SIZE_T, ULONG, ULONG, void *, ULONG);
+typedef void *(WINAPI *MapViewOfFile3Fn)(HANDLE, HANDLE, void *, ULONG64, SIZE_T, ULONG, ULONG, void *, ULONG);
+static MapViewOfFile3Fn map_view3;
+static int arena_state; // 0 untried, 1 reserved, -1 unavailable
+typedef struct { uint64_t start, end; } Range;
+static Range arena_used[16384];
+static unsigned arena_count;
+static int arena_available(void) {
+    if (arena_state) return arena_state > 0;
+    HMODULE base = GetModuleHandleW(L"kernelbase.dll");
+    VirtualAlloc2Fn alloc2 = base ? (VirtualAlloc2Fn)(void *)GetProcAddress(base, "VirtualAlloc2") : NULL;
+    map_view3 = base ? (MapViewOfFile3Fn)(void *)GetProcAddress(base, "MapViewOfFile3") : NULL;
+    void *arena = alloc2 && map_view3 ? alloc2(NULL, (void *)ARENA_START, (SIZE_T)(ARENA_END - ARENA_START),
+                                               MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0) : NULL;
+    arena_state = arena == (void *)ARENA_START ? 1 : -1;
+    printf("Guest address arena: %s\n", arena_state > 0 ? "reserved 0x400000000-0x10000000000 (16 KiB mappings)" : "unavailable, 64 KiB views");
+    return arena_state > 0;
+}
+static int arena_contains(uint64_t start, uint64_t length) { return start >= ARENA_START && length <= ARENA_END - start; }
+static unsigned arena_index(uint64_t start) { // first used range ending after start
+    unsigned lo = 0, hi = arena_count;
+    while (lo < hi) { unsigned mid = (lo + hi) / 2; if (arena_used[mid].end <= start) lo = mid + 1; else hi = mid; }
+    return lo;
+}
+static int arena_free(uint64_t start, uint64_t length) {
+    unsigned i = arena_index(start);
+    return i == arena_count || arena_used[i].start >= start + length;
+}
+static uint64_t arena_find(uint64_t length, uint64_t alignment) {
+    uint64_t candidate = round_up(ARENA_START, alignment);
+    for (unsigned i = 0; i <= arena_count; ++i) {
+        uint64_t gap_end = i < arena_count ? arena_used[i].start : ARENA_END;
+        if (candidate <= gap_end && length <= gap_end - candidate) return candidate;
+        if (i < arena_count) candidate = round_up(arena_used[i].end, alignment);
+    }
+    return 0;
+}
+// Splits [start, start+length) out of its free placeholder and maps section+offset there.
+static void *arena_map(HANDLE section, uint64_t offset, uint64_t start, uint64_t length) {
+    if (arena_count == sizeof(arena_used) / sizeof(*arena_used) || !arena_free(start, length)) return NULL;
+    unsigned i = arena_index(start);
+    uint64_t gap_start = i ? arena_used[i - 1].end : ARENA_START, gap_end = i < arena_count ? arena_used[i].start : ARENA_END;
+    if ((gap_start != start || gap_end != start + length) &&
+        !VirtualFree((void *)(uintptr_t)start, (SIZE_T)length, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) return NULL;
+    void *view = map_view3(section, GetCurrentProcess(), (void *)(uintptr_t)start, offset, (SIZE_T)length,
+                           MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0);
+    if (!view) return NULL; // the split placeholder stays a free gap of the arena
+    memmove(&arena_used[i + 1], &arena_used[i], (arena_count - i) * sizeof(*arena_used));
+    arena_used[i] = (Range){start, start + length};
+    ++arena_count;
+    return view;
+}
+static int32_t map_failed(const char *kind, uint64_t requested, uint64_t length, int32_t flags, int32_t result) {
+    printf("%s mapping failed: hint=0x%llx bytes=%llu flags=0x%x winerror=%lu\n", kind, (unsigned long long)requested,
+           (unsigned long long)length, flags, GetLastError());
+    return result;
+}
+
 int32_t GUEST_ABI memory_map_direct(void **address, uint64_t length, int32_t prot,
                                    int32_t flags, int64_t physical, uint64_t alignment) {
     // Unknown modes remain explicit errors. Fixed address bit 0x10 is supported;
@@ -230,7 +308,25 @@ int32_t GUEST_ABI memory_map_direct(void **address, uint64_t length, int32_t pro
         if ((uint64_t)physical >= allocations[i].start &&
             (uint64_t)physical - allocations[i].start <= allocations[i].length &&
             length <= allocations[i].length - ((uint64_t)physical - allocations[i].start)) allocated = 1;
-    if (!allocated) { ReleaseSRWLockExclusive(&memory_lock); return ERR_INVALID; }
+    if (!allocated) { ReleaseSRWLockExclusive(&memory_lock); return map_failed("Direct", (uintptr_t)*address, length, flags, ERR_INVALID); }
+    uintptr_t hint = (uintptr_t)*address;
+    if (arena_available() && (!hint || arena_contains(hint, length))) {
+        uint64_t at = hint && !(hint % alignment) && arena_free(hint, length) ? hint : (flags & 0x10) ? 0 : arena_find(length, alignment);
+        void *view = at ? arena_map(backing, (uint64_t)physical, at, length) : NULL;
+        DWORD old, mode = (prot & 2) ? PAGE_READWRITE : (prot & 1) ? PAGE_READONLY : PAGE_NOACCESS;
+        if (view && (!VirtualAlloc(view, (SIZE_T)length, MEM_COMMIT, PAGE_READWRITE) || !VirtualProtect(view, (SIZE_T)length, mode, &old)))
+            view = NULL; // stays mapped and recorded; reported as a failure
+        if (!view) { ReleaseSRWLockExclusive(&memory_lock); return map_failed("Direct", hint, length, flags, ERR_NOMEM); }
+        *address = view;
+        unsigned char *shadow = physical_shadow + (uint64_t)physical;
+        register_mapping_locked((uintptr_t)view, length, shadow, (uint32_t)prot & 3);
+        void (*hook)(uint64_t, uint64_t, uint8_t *) = map_hook;
+        ReleaseSRWLockExclusive(&memory_lock);
+        if (hook) hook((uintptr_t)view, length, shadow);
+        printf("Direct mapping: physical=0x%llx virtual=0x%llx bytes=%llu\n", (unsigned long long)(uint64_t)physical,
+               (unsigned long long)(uintptr_t)view, (unsigned long long)length);
+        return 0;
+    }
     uint64_t offset = (uint64_t)physical & ~UINT64_C(65535);
     uint64_t delta = (uint64_t)physical - offset;
     uint64_t span = delta + length;
@@ -252,7 +348,7 @@ int32_t GUEST_ABI memory_map_direct(void **address, uint64_t length, int32_t pro
             view=MapViewOfFileEx(backing,FILE_MAP_ALL_ACCESS,(DWORD)(offset>>32),(DWORD)offset,(SIZE_T)span,(void *)base);
         }
     }
-    if (!view) { ReleaseSRWLockExclusive(&memory_lock); return ERR_NOMEM; }
+    if (!view) { ReleaseSRWLockExclusive(&memory_lock); return map_failed("Direct", requested, length, flags, ERR_NOMEM); }
     // SEC_RESERVE makes backing lazy. Committing a section range commits shared
     // storage, so all views of that physical range observe writes without copying.
     if (!VirtualAlloc(view, (SIZE_T)span, MEM_COMMIT, PAGE_READWRITE)) {
@@ -301,11 +397,19 @@ static int32_t flexible_failed(const char *why,void **address,uint64_t length,in
 }
 int32_t GUEST_ABI memory_map_flexible(void **address,uint64_t length,int32_t prot,int32_t flags,const char *name){
     if(!address||!length||length%16384||(prot&~0x37))return flexible_failed("arguments",address,length,prot,flags,ERR_INVALID);
-    uint64_t span=round_up(length,65536);
+    uintptr_t hint=(uintptr_t)*address;
+    int arena=arena_available()&&(!hint||arena_contains(hint,length));
+    uint64_t span=arena?length:round_up(length,65536);
     HANDLE section=CreateFileMappingW(INVALID_HANDLE_VALUE,NULL,PAGE_EXECUTE_READWRITE,(DWORD)(span>>32),(DWORD)span,NULL);
     if(!section)return flexible_failed("section",address,length,prot,flags,ERR_NOMEM);
     unsigned char *shadow=MapViewOfFile(section,FILE_MAP_READ|FILE_MAP_WRITE,0,0,(SIZE_T)span);
-    void *view=shadow?map_view(section,span,(uintptr_t)*address,flags&0x10):NULL;
+    void *view=NULL;
+    if(shadow&&arena){
+        AcquireSRWLockExclusive(&memory_lock);
+        uint64_t at=hint&&!(hint%16384)&&arena_free(hint,length)?hint:(flags&0x10)?0:arena_find(length,16384);
+        view=at?arena_map(section,0,at,length):NULL;
+        ReleaseSRWLockExclusive(&memory_lock);
+    }else if(shadow)view=map_view(section,span,hint,flags&0x10);
     CloseHandle(section);
     DWORD old;
     if(!view||!VirtualProtect(view,(SIZE_T)span,page_mode(prot),&old)){
