@@ -103,12 +103,119 @@ static int32_t GUEST_ABI save_icon(const Point *point,const Icon *icon){
     if(ok)ok=MoveFileExA(temporary,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
     ReleaseSRWLockExclusive(&lock);return ok?0:err(11);
 }
+// ---- save data memory -----------------------------------------------------------------------
+// One file per user and slot, <user save root>\sce_sdmemory[slot]\memory.dat (as in shadPS4), with
+// param.bin and icon0.png in the matching .sce_sys folder. Held in host memory; every Set and Sync
+// writes the file back through a temporary.
+typedef struct {void *buf;uint64_t size;int64_t offset;uint8_t reserved[40];} MemoryData;
+typedef struct {int32_t user;uint8_t pad[4];MemoryData *data;Param *param;Icon *icon;uint32_t slot;uint8_t reserved[28];} MemoryGet;
+typedef struct {int32_t user;uint8_t pad[4];const MemoryData *data;const Param *param;const Icon *icon;uint32_t count,slot;uint8_t reserved[32];} MemorySet;
+typedef struct {uint32_t option;int32_t user;uint64_t size,icon_size;const Param *param;const Icon *icon;uint32_t slot;uint8_t reserved[20];} MemorySetup;
+typedef struct {uint64_t existed;uint8_t reserved[16];} MemorySetupResult;
+typedef struct {int32_t user;uint32_t slot,option;uint8_t reserved[28];} MemorySync;
+_Static_assert(sizeof(MemoryData)==64&&sizeof(MemoryGet)==64&&sizeof(MemorySet)==72&&sizeof(MemorySetup)==64,"SaveDataMemory ABI");
+enum {MEMORY_SLOTS=4};
+static struct {int active,user;uint64_t size;unsigned char *data;char path[1300],meta[1300];} memories[MEMORY_SLOTS];
+static int32_t memory_not_ready(void){return err(0x12);} // approximate: memory not set up
+static int memory_paths(int user,uint32_t slot,char *path,char *meta,size_t size){
+    char base[1200];if(!root(user,base,sizeof(base)))return 0;
+    char name[32];if(slot)snprintf(name,sizeof(name),"sce_sdmemory%u",slot);else snprintf(name,sizeof(name),"sce_sdmemory");
+    snprintf(path,size,"%s\\%s",base,name);snprintf(meta,size,"%s\\%s.sce_sys",base,name);return 1;
+}
+static int write_whole(const char *path,const void *data,uint64_t size){
+    char temporary[1400];snprintf(temporary,sizeof(temporary),"%s.pending",path);
+    FILE *f=fopen(temporary,"wb");int ok=f&&(!size||fwrite(data,1,(size_t)size,f)==size);if(f){fflush(f);fclose(f);}
+    return ok&&MoveFileExA(temporary,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
+}
+static int memory_flush(int slot){char file[1400];snprintf(file,sizeof(file),"%s\\memory.dat",memories[slot].path);return write_whole(file,memories[slot].data,memories[slot].size);}
+static int memory_slot(int user,uint32_t slot){return slot<MEMORY_SLOTS&&memories[slot].active&&memories[slot].user==user?(int)slot:-1;}
+static int32_t GUEST_ABI memory_setup(const MemorySetup *setup,MemorySetupResult *result){
+    if(!initialized)return err(1);if(!setup||setup->user<0||!setup->size||setup->slot>=MEMORY_SLOTS)return err(0);
+    char path[1300],meta[1300];if(!memory_paths(setup->user,setup->slot,path,meta,sizeof(path)))return err(11);
+    AcquireSRWLockExclusive(&lock);uint32_t s=setup->slot;
+    if(memories[s].active){ReleaseSRWLockExclusive(&lock);return err(13);} // already set up: busy
+    CreateDirectoryA(path,NULL);CreateDirectoryA(meta,NULL);
+    unsigned char *data=calloc(1,(size_t)setup->size);if(!data){ReleaseSRWLockExclusive(&lock);return err(11);}
+    char file[1400];snprintf(file,sizeof(file),"%s\\memory.dat",path);
+    uint64_t existed=0;FILE *f=fopen(file,"rb");
+    if(f){_fseeki64(f,0,SEEK_END);existed=(uint64_t)_ftelli64(f);_fseeki64(f,0,SEEK_SET);
+        fread(data,1,(size_t)(existed<setup->size?existed:setup->size),f);fclose(f);}
+    memories[s].active=1;memories[s].user=setup->user;memories[s].size=setup->size;memories[s].data=data;
+    strcpy(memories[s].path,path);strcpy(memories[s].meta,meta);
+    int ok=1;
+    if(!existed){
+        ok=memory_flush((int)s);
+        char name[1400];snprintf(name,sizeof(name),"%s\\param.bin",meta);
+        Param param;if(setup->param)param=*setup->param;else memset(&param,0,sizeof(param));
+        if(ok)ok=write_whole(name,&param,sizeof(param));
+        if(ok&&setup->icon&&setup->icon->buffer&&setup->icon->data_size){snprintf(name,sizeof(name),"%s\\icon0.png",meta);ok=write_whole(name,setup->icon->buffer,setup->icon->data_size);}
+    }
+    ReleaseSRWLockExclusive(&lock);
+    if(result){memset(result,0,sizeof(*result));result->existed=existed;}
+    printf("Save data memory slot %u: %llu bytes (%s)\n",s,(unsigned long long)setup->size,existed?"existing":"created");
+    return ok?0:err(11);
+}
+static int32_t GUEST_ABI memory_get(MemoryGet *get){
+    if(!initialized)return err(1);if(!get)return err(0);
+    AcquireSRWLockShared(&lock);int s=memory_slot(get->user,get->slot);
+    if(s<0){ReleaseSRWLockShared(&lock);return memory_not_ready();}
+    int32_t r=0;
+    if(get->data){MemoryData *d=get->data;
+        if(!d->buf||d->offset<0||(uint64_t)d->offset>memories[s].size||d->size>memories[s].size-(uint64_t)d->offset)r=err(0);
+        else memcpy(d->buf,memories[s].data+d->offset,(size_t)d->size);}
+    if(!r&&get->param)read_param(memories[s].meta,get->param);
+    if(!r&&get->icon&&get->icon->buffer){char name[1400];snprintf(name,sizeof(name),"%s\\icon0.png",memories[s].meta);
+        FILE *f=fopen(name,"rb");Icon *icon=(Icon *)get->icon;icon->data_size=f?fread((void *)icon->buffer,1,(size_t)icon->buffer_size,f):0;if(f)fclose(f);}
+    ReleaseSRWLockShared(&lock);return r;
+}
+static int32_t GUEST_ABI memory_set(const MemorySet *set){
+    if(!initialized)return err(1);if(!set||(set->count&&!set->data))return err(0);
+    AcquireSRWLockExclusive(&lock);int s=memory_slot(set->user,set->slot);
+    if(s<0){ReleaseSRWLockExclusive(&lock);return memory_not_ready();}
+    for(uint32_t i=0;i<set->count;++i){const MemoryData *d=&set->data[i];
+        if(!d->buf||d->offset<0||(uint64_t)d->offset>memories[s].size||d->size>memories[s].size-(uint64_t)d->offset){ReleaseSRWLockExclusive(&lock);return err(0);}}
+    for(uint32_t i=0;i<set->count;++i)memcpy(memories[s].data+set->data[i].offset,set->data[i].buf,(size_t)set->data[i].size);
+    int ok=memory_flush(s);char name[1400];
+    if(ok&&set->param){snprintf(name,sizeof(name),"%s\\param.bin",memories[s].meta);ok=write_whole(name,set->param,sizeof(*set->param));}
+    if(ok&&set->icon&&set->icon->buffer&&set->icon->data_size){snprintf(name,sizeof(name),"%s\\icon0.png",memories[s].meta);ok=write_whole(name,set->icon->buffer,set->icon->data_size);}
+    ReleaseSRWLockExclusive(&lock);return ok?0:err(11);
+}
+static int32_t GUEST_ABI memory_sync(const MemorySync *sync){
+    if(!initialized)return err(1);if(!sync)return err(0);
+    AcquireSRWLockExclusive(&lock);int s=memory_slot(sync->user,sync->slot);
+    int ok=s>=0&&memory_flush(s);ReleaseSRWLockExclusive(&lock);return s<0?memory_not_ready():ok?0:err(11);
+}
+// ---- delete, transfer ------------------------------------------------------------------------
+typedef struct {int32_t user,pad;const char *title;const DirName *dir;uint32_t unused;uint8_t reserved[32];int32_t pad2;} Delete;
+static int remove_tree(const char *path){
+    char pattern[1400];snprintf(pattern,sizeof(pattern),"%s\\*",path);WIN32_FIND_DATAA f;HANDLE h=FindFirstFileA(pattern,&f);
+    if(h!=INVALID_HANDLE_VALUE){do{if(!strcmp(f.cFileName,".")||!strcmp(f.cFileName,".."))continue;char child[1400];snprintf(child,sizeof(child),"%s\\%s",path,f.cFileName);
+        if(f.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)remove_tree(child);else DeleteFileA(child);}while(FindNextFileA(h,&f));FindClose(h);}
+    return RemoveDirectoryA(path)||GetLastError()==ERROR_FILE_NOT_FOUND||GetLastError()==ERROR_PATH_NOT_FOUND;
+}
+static int32_t GUEST_ABI delete_save(const Delete *d){
+    if(!initialized)return err(1);if(!d||d->user<0||!name_valid(d->dir))return err(0);
+    if(d->title&&d->title[0]&&strncmp(d->title,GAME_TITLE_ID,9))return err(8); // other titles' saves are not here
+    char base[1200],path[1300],meta[1300];if(!root(d->user,base,sizeof(base)))return err(11);
+    snprintf(path,sizeof(path),"%s\\%s",base,d->dir->name);snprintf(meta,sizeof(meta),"%s\\%s.sce_sys",base,d->dir->name);
+    AcquireSRWLockExclusive(&lock);
+    for(int i=0;i<16;++i)if(slots[i].active&&!strcmp(slots[i].path,path)){ReleaseSRWLockExclusive(&lock);return err(13);}
+    DWORD a=GetFileAttributesA(path);
+    if(a==INVALID_FILE_ATTRIBUTES||!(a&FILE_ATTRIBUTE_DIRECTORY)){ReleaseSRWLockExclusive(&lock);return err(8);}
+    int ok=remove_tree(path)&&remove_tree(meta);ReleaseSRWLockExclusive(&lock);
+    printf("Deleted save '%s'\n",d->dir->name);return ok?0:err(11);
+}
+// Saves of another title (PS4 to PS5 transfers): none exist on this PC.
+static int32_t GUEST_ABI transferring_mount(const void *mount,void *result){(void)result;if(!initialized)return err(1);if(!mount)return err(0);return err(8);}
 uintptr_t save_resolve(const char *identity){
     if(!strstr(identity,"#libSceSaveData#1#libSceSaveData#257"))return 0;const char *api=runtime_api_name(identity);
 #define API(n,f) if(!strcmp(api,n))return (uintptr_t)f
     API("sceSaveDataInitialize3",initialize);API("sceSaveDataTerminate",terminate);API("sceSaveDataMount2",mount_save);
     API("sceSaveDataUmount",umount_save);API("sceSaveDataSetParam",set_param);API("sceSaveDataDirNameSearch",search);
     API("sceSaveDataSaveIcon",save_icon);
+    API("sceSaveDataSetupSaveDataMemory2",memory_setup);API("sceSaveDataGetSaveDataMemory2",memory_get);
+    API("sceSaveDataSetSaveDataMemory2",memory_set);API("sceSaveDataSyncSaveDataMemory",memory_sync);
+    API("sceSaveDataDelete",delete_save);API("sceSaveDataTransferringMount",transferring_mount);
 #undef API
     return 0;
 }

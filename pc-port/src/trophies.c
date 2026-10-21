@@ -36,6 +36,30 @@ static int32_t GUEST_ABI unlock(int c,int h,int id,int *platinum){
     FILE *f=fopen(contexts[c-1].file,"wb");int ok=f&&fwrite(contexts[c-1].flags,1,16,f)==16;if(f)fclose(f);
     ReleaseSRWLockExclusive(&lock);return ok?0:err(1);
 }
+// Names, descriptions and grades live in the encrypted trophy configuration, so counts and unlock
+// state are real while names are generic and grades unknown (0).
+typedef struct {uint64_t size;uint32_t groups,trophies,platinum,gold,silver,bronze;char title[128],description[1024];} GameDetails;
+typedef struct {uint64_t size;uint32_t unlocked,platinum,gold,silver,bronze,progress;} GameData;
+typedef struct {uint64_t size;int32_t id,grade,group;uint8_t hidden,reserved[3];char name[128],description[1024];} Details;
+typedef struct {uint64_t size;int32_t id;uint8_t unlocked,reserved[3];uint64_t timestamp;} Data;
+static unsigned unlocked_count(const uint32_t *flags){unsigned n=0;for(unsigned i=0;i<LOCAL_TROPHY_COUNT;++i)n+=(flags[trophy_ids[i]/32]>>(trophy_ids[i]%32))&1;return n;}
+static int32_t GUEST_ABI game_info(int c,int h,GameDetails *details,GameData *data){
+    if(!details&&!data)return err(4);AcquireSRWLockShared(&lock);
+    if(!valid(c,h)||!contexts[c-1].registered){ReleaseSRWLockShared(&lock);return err(15);}
+    unsigned unlocked=unlocked_count(contexts[c-1].flags);ReleaseSRWLockShared(&lock);
+    if(details){uint64_t size=details->size;memset(details,0,sizeof(*details));details->size=size;details->trophies=LOCAL_TROPHY_COUNT;snprintf(details->title,128,"%s",GAME_TITLE);}
+    if(data){uint64_t size=data->size;memset(data,0,sizeof(*data));data->size=size;data->unlocked=unlocked;data->progress=LOCAL_TROPHY_COUNT?unlocked*100/LOCAL_TROPHY_COUNT:0;}
+    return 0;
+}
+static int32_t GUEST_ABI trophy_info(int c,int h,int id,Details *details,Data *data){
+    if(!details&&!data)return err(4);int known=0;for(unsigned i=0;i<LOCAL_TROPHY_COUNT;++i)if(trophy_ids[i]==id)known=1;
+    if(!known)return err(7);AcquireSRWLockShared(&lock);
+    if(!valid(c,h)||!contexts[c-1].registered){ReleaseSRWLockShared(&lock);return err(15);}
+    int unlocked=(contexts[c-1].flags[id/32]>>(id%32))&1;ReleaseSRWLockShared(&lock);
+    if(details){uint64_t size=details->size;memset(details,0,sizeof(*details));details->size=size;details->id=id;details->group=-1;snprintf(details->name,128,"Trophy %d",id);}
+    if(data){uint64_t size=data->size;memset(data,0,sizeof(*data));data->size=size;data->id=id;data->unlocked=(uint8_t)unlocked;}
+    return 0;
+}
 static int32_t GUEST_ABI destroy_handle(int h){if(h<1||h>16)return err(8);AcquireSRWLockExclusive(&lock);handles[h-1]=0;ReleaseSRWLockExclusive(&lock);return 0;}
 static int32_t GUEST_ABI destroy_context(int c){if(c<1||c>8)return err(9);AcquireSRWLockExclusive(&lock);contexts[c-1].active=0;ReleaseSRWLockExclusive(&lock);return 0;}
 uintptr_t trophy_resolve(const char *identity){
@@ -43,7 +67,7 @@ uintptr_t trophy_resolve(const char *identity){
 #define API(n,f) if(!strcmp(api,n))return (uintptr_t)f
     API("sceNpTrophyCreateHandle",create_handle);API("sceNpTrophyCreateContext",create_context);
     API("sceNpTrophyRegisterContext",register_context);API("sceNpTrophyGetTrophyUnlockState",unlock_state);
-    API("sceNpTrophyUnlockTrophy",unlock);API("sceNpTrophyDestroyHandle",destroy_handle);API("sceNpTrophyDestroyContext",destroy_context);
+    API("sceNpTrophyUnlockTrophy",unlock);API("sceNpTrophyGetGameInfo",game_info);API("sceNpTrophyGetTrophyInfo",trophy_info);API("sceNpTrophyDestroyHandle",destroy_handle);API("sceNpTrophyDestroyContext",destroy_context);
 #undef API
     return 0;
 }

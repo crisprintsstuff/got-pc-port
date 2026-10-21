@@ -13,6 +13,8 @@ from vs_env import environment
 ROOT = Path(__file__).resolve().parents[1]
 CLANG = ROOT.parent / 'tools/llvm/bin/clang-cl.exe'
 
+# -Wunused-but-set-global (new in LLVM 23) flags globals that are assigned but not read, such
+# as state kept for debugging; every other /W4 warning still fails the build.
 def build(output=None):
     if not CLANG.exists():
         raise RuntimeError('Requires tools/llvm/bin/clang-cl.exe')
@@ -28,7 +30,7 @@ def build(output=None):
     native_objects=[]
     for name in ('reduction','feedback_identity','hooks','geometry','geometry_hook','engine_draw'):
         obj=out/f'native-{name}.obj'
-        subprocess.run([str(CLANG),'/nologo','/std:c++20','/EHsc','/W4','/WX','/O2','/MD','/D_CRT_SECURE_NO_WARNINGS','/arch:AVX2','/fp:precise','/c',str(ROOT/f'native/{name}.cpp'),f'/Fo:{obj}'],cwd=out,env=env,check=True)
+        subprocess.run([str(CLANG),'/nologo','/std:c++20','/EHsc','/W4','/WX','/clang:-Wno-unknown-warning-option','/clang:-Wno-unused-but-set-global','/O2','/MD','/D_CRT_SECURE_NO_WARNINGS','/arch:AVX2','/fp:precise','/c',str(ROOT/f'native/{name}.cpp'),f'/Fo:{obj}'],cwd=out,env=env,check=True)
         native_objects.append(str(obj))
     feedback_stub=out/'native-feedback_identity_stub.obj'
     subprocess.run([str(CLANG),'/nologo','/c',str(ROOT/'native/feedback_identity_stub.S'),
@@ -37,7 +39,7 @@ def build(output=None):
     feedback_test_stub=out/'test-feedback_identity_abi_test.obj'
     subprocess.run([str(CLANG),'/nologo','/c',str(ROOT/'tests/feedback_identity_abi_test.S'),
                     f'/Fo:{feedback_test_stub}'],cwd=out,env=env,check=True)
-    subprocess.run([str(CLANG),'/std:c++20','/EHsc','/W4','/WX','/O2','/MD','/arch:AVX2',
+    subprocess.run([str(CLANG),'/std:c++20','/EHsc','/W4','/WX','/clang:-Wno-unknown-warning-option','/clang:-Wno-unused-but-set-global','/O2','/MD','/arch:AVX2',
                     '/clang:-fuse-ld=lld',str(ROOT/'tests/feedback_identity_abi_test.cpp'),
                     native_objects[1],str(feedback_stub),str(feedback_test_stub),
                     f'/Fe:{out / "feedback-identity-abi-test.exe"}'],cwd=out,env=env,check=True)
@@ -53,7 +55,7 @@ def build(output=None):
         + 'static const struct { const char *identity, *api; } api_names[] = {\n'
         + ''.join('{' + json.dumps(k) + ',' + json.dumps(v) + '},\n' for k, v in sorted(symbols.items()))
         + '};\n', encoding='utf-8')
-    cmd = [str(CLANG), '/TC', '/std:c11', '/W4', '/WX', '/O2', '/MD',
+    cmd = [str(CLANG), '/TC', '/std:c11', '/W4', '/WX', '/clang:-Wno-unknown-warning-option', '/clang:-Wno-unused-but-set-global', '/O2', '/MD',
            '/clang:-fuse-ld=lld', f'/I{out}', '/D_CRT_SECURE_NO_WARNINGS', '/DZYDIS_STATIC_BUILD', '/DZYCORE_STATIC_BUILD',
            f'/I{ROOT.parent / "research/shadPS4-perf/externals/zydis/include"}',
            f'/I{ROOT.parent / "research/shadPS4-perf/externals/zydis/dependencies/zycore/include"}',
@@ -94,11 +96,11 @@ def build(output=None):
     search_cmd[search_cmd.index(f'/Fe:{out / "runtime-test.exe"}')]=f'/Fe:{out / "save-search-test.exe"}'
     subprocess.run(search_cmd,cwd=out,env=env,check=True)
     subprocess.run([str(out/'save-search-test.exe')],cwd=out,check=True,timeout=10)
-    subprocess.run([str(CLANG),'/TC','/std:c11','/W4','/WX','/O2','/MD','/clang:-fuse-ld=lld','/D_CRT_SECURE_NO_WARNINGS',
+    subprocess.run([str(CLANG),'/TC','/std:c11','/W4','/WX','/clang:-Wno-unknown-warning-option','/clang:-Wno-unused-but-set-global','/O2','/MD','/clang:-fuse-ld=lld','/D_CRT_SECURE_NO_WARNINGS',
                     str(ROOT/'tests/libc_portable_test.c'),str(ROOT/'src/libc_format.c'),str(ROOT/'src/libc_mspace.c'),
                     str(out/'libc_varargs.obj'),f'/Fe:{out/"libc-portable-test.exe"}'],cwd=out,env=env,check=True)
     subprocess.run([str(out/'libc-portable-test.exe')],cwd=out,check=True,timeout=30)
-    subprocess.run([str(CLANG),'/std:c++20','/EHsc','/W4','/WX','/O2','/MD','/clang:-fuse-ld=lld',str(ROOT/'tests/readback_hint_test.cpp'),f'/Fe:{out / "readback-hint-test.exe"}'],cwd=out,env=env,check=True)
+    subprocess.run([str(CLANG),'/std:c++20','/EHsc','/W4','/WX','/clang:-Wno-unknown-warning-option','/clang:-Wno-unused-but-set-global','/O2','/MD','/clang:-fuse-ld=lld',str(ROOT/'tests/readback_hint_test.cpp'),f'/Fe:{out / "readback-hint-test.exe"}'],cwd=out,env=env,check=True)
     subprocess.run([str(out/'readback-hint-test.exe')],cwd=out,check=True,timeout=10)
 
 if __name__ == '__main__':
