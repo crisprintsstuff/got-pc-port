@@ -42,7 +42,6 @@ static void test_format(void) {
     // More doubles than the 8 XMM registers, and more integers than the 6 GP registers.
     n = sn(b, sizeof(b), "%g %g %g %g %g %g %g %g %g %g %d %d %d %d", 1., 2., 3., 4., 5., 6., 7., 8., 9., 10., 11, 12, 13, 14);
     format("1 2 3 4 5 6 7 8 9 10 11 12 13 14", 32, b, n);
-    n = sn(b, sizeof(b), "%Lf %d", (long double)2.25, 3); format("2.250000 3", 10, b, n);
     int count = 0; long long big = 0;
     n = sn(b, sizeof(b), "abc%n defg%lln", &count, &big); format("abc defg", 8, b, n);
     CHECK(count == 3 && big == 8);
@@ -50,6 +49,23 @@ static void test_format(void) {
     n = sn(NULL, 0, "%d", 12345); CHECK(n == 5);
     n = sp(b, "%s-%d", "x", 9); format("x-9", 3, b, n);
     n = sn(b, sizeof(b), "%q", 1); format("%q", 2, b, n);
+}
+
+// A PS4 caller passes long double as an 80-bit x87 value in memory, 16-byte aligned. long double is
+// only a 64-bit double on Windows, so that argument list is built by hand.
+static void test_long_double(void) {
+    _Alignas(16) uint8_t stack[32] = {0}, registers[176] = {0};
+    uint64_t mantissa = UINT64_C(0x9000000000000000), three = 3; // 2.25 = 1.125 * 2^1
+    uint16_t sign_exponent = 0x4000;
+    memcpy(stack, &mantissa, 8); memcpy(stack + 8, &sign_exponent, 2); memcpy(stack + 16, &three, 8);
+    SysvVaList va = {48, 176, stack, registers}; // registers exhausted: everything comes from memory
+    char b[64];
+    int n = sysv_vformat(b, sizeof(b), "%Lf %d", &va);
+    format("2.250000 3", 10, b, n);
+    sign_exponent = 0xc000; memcpy(stack + 8, &sign_exponent, 2);
+    va = (SysvVaList){48, 176, stack, registers};
+    n = sysv_vformat(b, sizeof(b), "%.1Lf", &va);
+    format("-2.2", 4, b, n);
 }
 
 static void test_scan(void) {
@@ -116,6 +132,7 @@ static void test_mspace(void) {
 
 int main(void) {
     test_format();
+    test_long_double();
     test_scan();
     test_mspace();
     printf(failures ? "%d FAILED\n" : "libc portable tests passed\n", failures);
