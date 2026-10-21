@@ -12,12 +12,6 @@ index 5b70b24..fbb330c 100644
      else()
          target_link_options(shadps4 PRIVATE -Wl,--disable-dynamicbase)
      endif()
-diff --git a/externals/toml11 b/externals/toml11
---- a/externals/toml11
-+++ b/externals/toml11
-@@ -1 +1 @@
--Subproject commit a01fe3b4c14c6d7b99ee3f07c9e80058c6403097
-+Subproject commit a01fe3b4c14c6d7b99ee3f07c9e80058c6403097-dirty
 diff --git a/src/common/perf_stats.h b/src/common/perf_stats.h
 index 801299e..45515ed 100644
 --- a/src/common/perf_stats.h
