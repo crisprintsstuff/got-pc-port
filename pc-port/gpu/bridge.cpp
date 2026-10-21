@@ -62,6 +62,7 @@ namespace Libraries::GnmDriver {void RegisterLib(Core::Loader::SymbolsResolver*)
 namespace Libraries::VideoOut {void RegisterLib(Core::Loader::SymbolsResolver*);}
 namespace Libraries::Ajm {void RegisterLib(Core::Loader::SymbolsResolver*);}
 namespace Libraries::Videodec {void RegisterLib(Core::Loader::SymbolsResolver*);}
+namespace Libraries::Videodec2 {void RegisterLib(Core::Loader::SymbolsResolver*);}
 namespace Libraries::Kernel {void RegisterEventQueue(Core::Loader::SymbolsResolver*);}
 namespace {
 IssGpuCallbacks host{};
@@ -485,6 +486,7 @@ extern "C" int iss_gpu_initialize(const IssGpuCallbacks *callbacks){
                     Libraries::GnmDriver::RegisterLib(&resolver);Libraries::VideoOut::RegisterLib(&resolver);
                     Libraries::Ajm::RegisterLib(&resolver);
                     Libraries::Videodec::RegisterLib(&resolver);
+                    Libraries::Videodec2::RegisterLib(&resolver); // used by Ghost of Tsushima's cutscenes
                     init_state.store(1,std::memory_order_release);
                 }catch(const std::exception& e){init_error=e.what();init_state.store(-1,std::memory_order_release);}
             });

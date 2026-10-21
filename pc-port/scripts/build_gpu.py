@@ -67,7 +67,7 @@ def build(check=False,jobs=4,output=None,lto='none',cpu='generic',dry_run=False)
                 SOURCE/'core/libraries/kernel/equeue.cpp']
     sources += [SOURCE/'imgui/renderer/imgui_impl_vulkan.cpp',SOURCE/'imgui/renderer/texture_manager.cpp',SOURCE/'common/stb.cpp']
     sources += list((SOURCE/'core/libraries/ajm').glob('*.cpp'))
-    sources += [SOURCE/'core/libraries/videodec'/n for n in ('videodec.cpp','videodec_impl.cpp','video_utils.cpp')]
+    sources += [SOURCE/'core/libraries/videodec'/n for n in ('videodec.cpp','videodec_impl.cpp','video_utils.cpp','videodec2.cpp','videodec2_impl.cpp')]
     sources += list((ROOT/'gpu').glob('*.cpp'))
     if check:
         sources=[ROOT/'gpu/overrides/gnmdriver.cpp',ROOT/'gpu/overrides/vk_presenter.cpp',
