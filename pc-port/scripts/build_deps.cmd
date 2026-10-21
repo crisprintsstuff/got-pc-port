@@ -18,7 +18,9 @@ if not exist "%ROOT%\research\shadPS4-perf\CMakeLists.txt" (echo Missing researc
 where cmake >nul 2>nul || (echo CMake not found: install "C++ CMake tools for Windows" in Visual Studio. & exit /b 1)
 where ninja >nul 2>nul || (echo Ninja not found: install "C++ CMake tools for Windows" in Visual Studio. & exit /b 1)
 set "COMMON=-G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
-cmake -S "%ROOT%\research\shadPS4-perf" -B "%ROOT%\build-opt" %COMMON% || exit /b 1
+rem LibreSSL defines be64toh/htole32 itself on Windows unless CMake finds an endian.h; a newer
+rem toolchain has one without those functions, so the check is answered "no".
+cmake -S "%ROOT%\research\shadPS4-perf" -B "%ROOT%\build-opt" %COMMON% -DHAVE_ENDIAN_H=OFF -DHAVE_MACHINE_ENDIAN_H=OFF || exit /b 1
 cmake --build "%ROOT%\build-opt" || exit /b 1
 cmake -S "%ROOT%\research\shadPS4-perf\externals\sdl3" -B "%ROOT%\build-sdl" %COMMON% -DSDL_TEST_LIBRARY=OFF || exit /b 1
 cmake --build "%ROOT%\build-sdl" || exit /b 1
