@@ -257,19 +257,49 @@ static void GUEST_ABI g_exit(int status) {
 }
 static void GUEST_ABI g_catch_return_from_main(int status) { g_exit(status); }
 static void GUEST_ABI g_init_env(void) {}
+// Module unload: the handlers registered for that module would run here; modules never unload.
+static void GUEST_ABI g_cxa_finalize(void *dso) { (void)dso; }
 
 // ---- time ----------------------------------------------------------------------------------------
 // BSD struct tm: the nine ints, then long tm_gmtoff and char *tm_zone.
 typedef struct { int32_t sec, min, hour, mday, mon, year, wday, yday, isdst; int64_t gmtoff; const char *zone; } GuestTm;
 _Static_assert(sizeof(GuestTm) == 56, "PS4 struct tm layout");
 static int64_t GUEST_ABI g_time(int64_t *out) { int64_t t = _time64(NULL); if (out) *out = t; return t; }
+static GuestTm to_guest(const struct tm *h, int64_t gmtoff, const char *zone) {
+    GuestTm g = {h->tm_sec, h->tm_min, h->tm_hour, h->tm_mday, h->tm_mon, h->tm_year, h->tm_wday, h->tm_yday, h->tm_isdst, gmtoff, zone};
+    return g;
+}
+static struct tm to_host(const GuestTm *t) {
+    struct tm h = {0};
+    h.tm_sec = t->sec; h.tm_min = t->min; h.tm_hour = t->hour; h.tm_mday = t->mday; h.tm_mon = t->mon;
+    h.tm_year = t->year; h.tm_wday = t->wday; h.tm_yday = t->yday; h.tm_isdst = t->isdst;
+    return h;
+}
+// C11 Annex K order (time, result), as in the PS4 libc, not the Microsoft one.
+static GuestTm *GUEST_ABI g_gmtime_s(const int64_t *t, GuestTm *out) {
+    struct tm h;
+    if (!t || !out || _gmtime64_s(&h, t)) { *runtime_errno() = EINVAL; return NULL; }
+    *out = to_guest(&h, 0, "UTC");
+    return out;
+}
 static GuestTm *GUEST_ABI g_gmtime(const int64_t *t) {
     static _Thread_local GuestTm result;
+    return g_gmtime_s(t, &result);
+}
+static GuestTm *GUEST_ABI g_localtime(const int64_t *t) {
+    static _Thread_local GuestTm result;
     struct tm h;
-    if (!t || _gmtime64_s(&h, t)) { *runtime_errno() = EINVAL; return NULL; }
-    GuestTm g = {h.tm_sec, h.tm_min, h.tm_hour, h.tm_mday, h.tm_mon, h.tm_year, h.tm_wday, h.tm_yday, h.tm_isdst, 0, "UTC"};
-    result = g;
+    if (!t || _localtime64_s(&h, t)) { *runtime_errno() = EINVAL; return NULL; }
+    long offset = 0;
+    _get_timezone(&offset); // seconds west of UTC, without daylight saving
+    result = to_guest(&h, -(int64_t)offset + (h.tm_isdst > 0 ? 3600 : 0), "");
     return &result;
+}
+static int64_t GUEST_ABI g_mktime(GuestTm *t) {
+    struct tm h = to_host(t);
+    int64_t r = _mktime64(&h);
+    if (r != -1) *t = to_guest(&h, t->gmtoff, t->zone);
+    return r;
 }
 // The UCRT aborts on conversions it does not know, so those are printed literally.
 static uint64_t GUEST_ABI g_strftime(char *d, uint64_t n, const char *format, const GuestTm *t) {
@@ -282,9 +312,7 @@ static uint64_t GUEST_ABI g_strftime(char *d, uint64_t n, const char *format, co
         else host[k++] = '%';
     }
     host[k] = 0;
-    struct tm h = {0};
-    h.tm_sec = t->sec; h.tm_min = t->min; h.tm_hour = t->hour; h.tm_mday = t->mday; h.tm_mon = t->mon;
-    h.tm_year = t->year; h.tm_wday = t->wday; h.tm_yday = t->yday; h.tm_isdst = t->isdst;
+    struct tm h = to_host(t);
     return strftime(d, (size_t)n, host, &h);
 }
 
@@ -311,7 +339,7 @@ static void GUEST_ABI g_guard_release(volatile uint8_t *g) {
 static void GUEST_ABI g_pure_virtual(void) { stop("pure virtual function called"); }
 
 // ---- resolution ----------------------------------------------------------------------------------
-static uint32_t need_sce_libc = 1;
+static uint32_t need_sce_libc = 1; // Need_sceLibc and Need_sceLibcInternal: link markers
 static const struct { const char *api; const void *fn; } table[] = {
 #define E(name, fn) {name, (const void *)fn}
     E("strchr", g_strchr), E("strrchr", g_strrchr), E("strstr", g_strstr), E("strcpy", g_strcpy),
@@ -338,7 +366,8 @@ static const struct { const char *api; const void *fn; } table[] = {
     E("malloc", g_malloc), E("calloc", g_calloc), E("free", g_free), E("qsort", g_qsort), E("bsearch", g_bsearch),
     E("rand", g_rand), E("srand", g_srand), E("atexit", g_atexit), E("__cxa_atexit", g_cxa_atexit), E("exit", g_exit),
     E("catchReturnFromMain", g_catch_return_from_main), E("_init_env", g_init_env),
-    E("time", g_time), E("gmtime", g_gmtime), E("strftime", g_strftime),
+    E("time", g_time), E("gmtime", g_gmtime), E("gmtime_s", g_gmtime_s), E("localtime", g_localtime),
+    E("mktime", g_mktime), E("strftime", g_strftime), E("__cxa_finalize", g_cxa_finalize),
     E("__cxa_guard_acquire", g_guard_acquire), E("__cxa_guard_release", g_guard_release),
     E("__cxa_pure_virtual", g_pure_virtual),
     E("sceLibcMspaceCreate", mspace_create), E("sceLibcMspaceDestroy", mspace_destroy),
@@ -358,5 +387,6 @@ uintptr_t libc_resolve(const char *identity) {
     return 0;
 }
 uintptr_t libc_resolve_data(const char *identity) {
-    return is_libc(identity) && !strcmp(runtime_api_name(identity), "Need_sceLibc") ? (uintptr_t)&need_sce_libc : 0;
+    const char *api = runtime_api_name(identity);
+    return is_libc(identity) && (!strcmp(api, "Need_sceLibc") || !strcmp(api, "Need_sceLibcInternal")) ? (uintptr_t)&need_sce_libc : 0;
 }

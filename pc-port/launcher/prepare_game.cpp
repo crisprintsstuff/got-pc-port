@@ -468,7 +468,16 @@ std::wstring PrepareGame(const fs::path& game, const fs::path& out_file,
         if (mods[0].sha256 != ExpectedEboot)
             return L"Unsupported eboot.bin version: this port needs the decrypted retail build of "
                    L"Ghost of Tsushima (CUSA11456) patch 2.18 it was made for.";
-        // Ghost of Tsushima ships no sce_module/*.prx; libc comes from the runtime.
+        // The game's own libc and Fios2 when the dump has them (scripts/game_id.py); otherwise
+        // the runtime's libc stands in.
+        const fs::path libc = game / "sce_module" / "libc.prx", fios = game / "sce_module" / "libSceFios2.prx";
+        if (fs::is_regular_file(libc) != fs::is_regular_file(fios))
+            return L"sce_module has libc.prx or libSceFios2.prx but not both.";
+        if (fs::is_regular_file(libc)) {
+            progress(0.55f, L"Reading sce_module");
+            mods.push_back(LoadModule(libc, false));
+            mods.push_back(LoadModule(fios, false));
+        }
         progress(0.70f, L"Linking");
         const Bytes raw = BuildLinked(mods);
         progress(0.90f, L"Writing");

@@ -12,7 +12,8 @@ import json
 from pathlib import Path
 import struct
 
-from prepare import ROOT, DEFAULT_GAME, EXPECTED_EBOOT, BUNDLED_MODULES, module, identity_key, names_database
+from prepare import ROOT, DEFAULT_GAME, EXPECTED_EBOOT, module, identity_key, names_database
+from game_id import bundled_modules
 from ps4_format import span
 
 def align(value, alignment=65536):
@@ -152,7 +153,7 @@ def link(game, out):
     if out == ROOT.resolve() or out == game.resolve() or game.resolve() in out.parents:
         raise ValueError('output must be isolated inside pc-port')
     modules = [module(game / 'eboot.bin')] + [module(game / 'sce_module' / name)
-                                            for name in BUNDLED_MODULES]
+                                            for name in bundled_modules(game)]
     if modules[0]['sha256'] != EXPECTED_EBOOT:
         raise ValueError('unsupported eboot identity')
     raw, report, rows = build_linked(modules)

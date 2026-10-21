@@ -15,7 +15,7 @@ import struct
 import sys
 
 from ps4_format import parse_self, span, unpack, sfo
-from game_id import EXPECTED_EBOOT, TITLE_ID, BUNDLED_MODULES
+from game_id import EXPECTED_EBOOT, TITLE_ID, bundled_modules
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = ROOT.parent
@@ -220,7 +220,7 @@ def prepare(game, out):
     meta = sfo((game / 'sce_sys/param.sfo').read_bytes())
     if meta.get('TITLE_ID') != TITLE_ID:
         raise ValueError('unexpected title ID')
-    bundled = [module(game / 'sce_module' / name) for name in BUNDLED_MODULES]
+    bundled = [module(game / 'sce_module' / name) for name in bundled_modules(game)]
     hints, hint_source = names_database()
     exports = {}
     for m in bundled:
