@@ -249,6 +249,10 @@ void runtime_report_thread(HANDLE out, const char *name, DWORD tid, const CONTEX
         if (link[0] <= frame) break;
         frame = link[0];
     }
+    runtime_report_write(out, " regs: rax=%llx rbx=%llx rcx=%llx rdx=%llx rsi=%llx rdi=%llx r12=%llx r13=%llx r14=%llx r15=%llx",
+                         (unsigned long long)c->Rax, (unsigned long long)c->Rbx, (unsigned long long)c->Rcx, (unsigned long long)c->Rdx,
+                         (unsigned long long)c->Rsi, (unsigned long long)c->Rdi, (unsigned long long)c->R12, (unsigned long long)c->R13,
+                         (unsigned long long)c->R14, (unsigned long long)c->R15);
     uint64_t words[512] = {0}; SIZE_T got = 0; int found = 0;
     ReadProcessMemory(GetCurrentProcess(), (void *)c->Rsp, words, sizeof(words), &got);
     runtime_report_write(out, " scan:");
@@ -257,6 +261,44 @@ void runtime_report_thread(HANDLE out, const char *name, DWORD tid, const CONTEX
             runtime_report_write(out, " +0x%llx", (unsigned long long)(words[i] - (uintptr_t)source_image)); ++found;
         }
     runtime_report_write(out, "\n");
+    // ISS_HANG_DUMP_REG=<thread>:<register>:<bytes>[,...]: memory at a guest thread's register.
+    const char *spec = getenv("ISS_HANG_DUMP_REG");
+    for (const char *s = spec; s && *s;) {
+        char thread[64] = "", reg[8] = ""; unsigned length = 0; int used = 0;
+        if (sscanf(s, "%63[^:]:%7[^:]:%i%n", thread, reg, &length, &used) < 3) break;
+        if (!strcmp(thread, name)) {
+            const DWORD64 *values[] = {&c->Rax, &c->Rbx, &c->Rcx, &c->Rdx, &c->Rsi, &c->Rdi, &c->R12, &c->R13, &c->R14, &c->R15, &c->Rsp, &c->Rbp};
+            const char *names[] = {"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r12", "r13", "r14", "r15", "rsp", "rbp"};
+            for (int i = 0; i < 12; ++i)
+                if (!strcmp(reg, names[i])) runtime_report_dump(out, *values[i], length);
+        }
+        s += used; if (*s == ',') ++s; else break;
+    }
+}
+// Hex dump, 16 bytes a line, of readable memory; image addresses are shown as offsets.
+void runtime_report_dump(HANDLE out, uint64_t address, unsigned length) {
+    if (length > 65536) length = 65536;
+    runtime_report_write(out, "DUMP 0x%llx (+0x%llx) %u bytes\r\n", (unsigned long long)address,
+                         (unsigned long long)(address - (uintptr_t)source_image), length);
+    for (unsigned at = 0; at < length; at += 16) {
+        uint8_t line[16]; SIZE_T got = 0;
+        if (!ReadProcessMemory(GetCurrentProcess(), (void *)(uintptr_t)(address + at), line, 16, &got) || got != 16) {
+            runtime_report_write(out, "  %04x unreadable\r\n", at); break;
+        }
+        uint64_t q[2]; memcpy(q, line, 16);
+        runtime_report_write(out, "  %04x %016llx %016llx\r\n", at, (unsigned long long)q[0], (unsigned long long)q[1]);
+    }
+}
+// ISS_HANG_DUMP=+<image offset>:<bytes>|<address>:<bytes>[,...]
+void runtime_report_dumps(HANDLE out) {
+    const char *spec = getenv("ISS_HANG_DUMP");
+    for (const char *s = spec; s && *s;) {
+        int relative = *s == '+'; if (relative) ++s;
+        unsigned long long address = 0; unsigned length = 0; int used = 0;
+        if (sscanf(s, "%llx:%i%n", &address, &length, &used) < 2) break;
+        runtime_report_dump(out, relative ? (uintptr_t)source_image + address : address, length);
+        s += used; if (*s == ',') ++s; else break;
+    }
 }
 
 static int describe_address(char *out, size_t size, uint64_t at) {
