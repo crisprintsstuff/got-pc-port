@@ -114,6 +114,23 @@ static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
     if (id < import_count)
         printf("\"import_index\":%llu,\"symbol\":\"%s\",", (unsigned long long)id, names[id]);
     printf("\"rax\":\"0x%llx\",\"tid\":%lu,",(unsigned long long)exception->ContextRecord->Rax,GetCurrentThreadId());
+    {   // More registers, and the return addresses of the frame-pointer chain (the eboot keeps
+        // rbp frames) as image offsets, so a fault inside a shared helper names its callers.
+        CONTEXT *c = exception->ContextRecord;
+        printf("\"rbx\":\"0x%llx\",\"rcx\":\"0x%llx\",\"rdx\":\"0x%llx\",\"r12\":\"0x%llx\",\"r13\":\"0x%llx\",\"r14\":\"0x%llx\",\"r15\":\"0x%llx\",\"rsp\":\"0x%llx\",\"rbp\":\"0x%llx\",\"stack\":[",
+               (unsigned long long)c->Rbx, (unsigned long long)c->Rcx, (unsigned long long)c->Rdx, (unsigned long long)c->R12,
+               (unsigned long long)c->R13, (unsigned long long)c->R14, (unsigned long long)c->R15, (unsigned long long)c->Rsp,
+               (unsigned long long)c->Rbp);
+        uint64_t frame = c->Rbp, link[2];
+        for (int depth = 0; depth < 24 && frame && !(frame & 7); ++depth) {
+            if (!ReadProcessMemory(GetCurrentProcess(), (void *)frame, link, sizeof(link), &copied) || copied != sizeof(link)) break;
+            if (link[1] < (uintptr_t)image || link[1] - (uintptr_t)image >= image_size) break;
+            printf("%s\"0x%llx\"", depth ? "," : "", (unsigned long long)(link[1] - (uintptr_t)image));
+            if (link[0] <= frame) break;
+            frame = link[0];
+        }
+        printf("],");
+    }
     printf("\"rdi\":\"0x%llx\",\"rsi\":\"0x%llx\"}\n",
            (unsigned long long)exception->ContextRecord->Rdi, (unsigned long long)exception->ContextRecord->Rsi);
     fflush(stdout);
