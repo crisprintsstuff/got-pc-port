@@ -19,15 +19,18 @@ The game identity lives in `pc-port/scripts/game_id.py` and `pc-port/src/game.h`
   `libc_format.c` + `libc_varargs.S` (printf/scanf over SysV argument lists) and
   `libc_mspace.c` (sceLibcMspace allocators inside the game's memory ranges).
   `tests/libc_portable_test.c` also runs on Linux.
-- The inFAMOUS native hooks (`pc-port/native/`) patch inFAMOUS code addresses and are not installed.
+- PSN, voice chat, sharing, streaming, crash dumps and sockets behave as on a console that is
+  signed out with no network (`offline.c`); each logs `OFFLINE <api>` on its first call.
+- The inFAMOUS native hooks (`pc-port/native/`, and the eboot patches in `gpu/bridge.cpp`) patch
+  inFAMOUS code addresses and are not installed.
 - The inFAMOUS shader packs, recipes and profiling scripts are kept for reference but do not apply.
 
 ## Roadmap
 
 1. ~~Retarget identity checks, launcher and save paths~~
-2. ~~libc replacement~~ (`pc-port/src/libc*.c`, untested on Windows); offline stubs for PSN, VoiceQoS, streaming and screenshots
+2. ~~libc replacement and offline stubs~~ (`pc-port/src/libc*.c`, `pc-port/src/offline.c`; untested on Windows)
 3. Build on Windows; run to the first unimplemented call
-4. Audio3d, Rtc, the remaining kernel services
+4. The remaining 55 imports: Audio3d, Rtc, save data memory, trophy info, kernel event queues and memory
 5. Renderer bring-up
 
 ## Preparing (any OS with Python 3)

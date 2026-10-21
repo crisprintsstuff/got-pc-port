@@ -169,6 +169,7 @@ uintptr_t runtime_resolve(const char *identity, int data) {
     if (!fn) fn = audio_resolve(identity);
     if (!fn) fn = kernel_sync_resolve(identity);
     if (!fn) fn = http_resolve(identity);
+    if (!fn) fn = offline_resolve(identity);
     return fn ? fn : gpu_resolve(identity);
 }
 

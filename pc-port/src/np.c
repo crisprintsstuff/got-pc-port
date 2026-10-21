@@ -44,6 +44,7 @@ static int32_t GUEST_ABI create_request(const uint64_t *param){
         requests[i].active=1;requests[i].complete=0;requests[i].result=err(6);ReleaseSRWLockExclusive(&lock);return 0x20000001+i;}
     ReleaseSRWLockExclusive(&lock);return err(19);
 }
+static int32_t GUEST_ABI create_plain_request(void){uint64_t param[3]={24,0,0};return create_request(param);}
 static int32_t GUEST_ABI availability(int id,int user){
     int i=id-0x20000001;if(user<0)return err(3);if(i<0||i>=128)return err(20);
     AcquireSRWLockExclusive(&lock);if(!requests[i].active){ReleaseSRWLockExclusive(&lock);return err(20);}
@@ -67,7 +68,7 @@ uintptr_t np_resolve(const char *identity){
     API("sceNpGetOnlineId",offline_identity);API("sceNpGetAccountIdA",offline_identity);
     API("sceNpGetAccountCountryA",offline_identity);API("sceNpGetGamePresenceStatusA",offline_identity);
     API("sceNpRegisterStateCallbackA",register_state);API("sceNpRegisterGamePresenceCallbackA",register_presence);
-    API("sceNpCheckCallback",check_callbacks);API("sceNpCreateAsyncRequest",create_request);
+    API("sceNpCheckCallback",check_callbacks);API("sceNpCreateAsyncRequest",create_request);API("sceNpCreateRequest",create_plain_request);
     API("sceNpCheckNpAvailabilityA",availability);API("sceNpPollAsync",poll);API("sceNpDeleteRequest",delete_request);
 #undef API
     return 0;

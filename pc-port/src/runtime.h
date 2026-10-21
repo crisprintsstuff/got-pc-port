@@ -44,6 +44,7 @@ int runtime_file_mount(unsigned slot,const char *guest,const char *host,int read
 int runtime_file_translate(const char *guest,char *host,size_t size,int write);
 uintptr_t libc_resolve(const char *identity);
 uintptr_t libc_resolve_data(const char *identity);
+uintptr_t offline_resolve(const char *identity);
 void runtime_file_unmount(unsigned slot);
 void *memory_allocate_image(uint64_t size);
 void memory_register_image(uint64_t offset,uint64_t size,uint32_t flags);

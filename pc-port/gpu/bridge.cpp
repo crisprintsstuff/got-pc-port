@@ -355,13 +355,8 @@ extern "C" int iss_gpu_initialize(const IssGpuCallbacks *callbacks){
     if(!callbacks||callbacks->struct_size!=sizeof(host)||!callbacks->backing||!callbacks->clamp||!callbacks->visit_mappings||!callbacks->protect||!callbacks->mapping_epoch||!callbacks->mapping_lock_shared||!callbacks->mapping_unlock_shared)return -1;
     host=*callbacks;
     iss::timeline::Emit("gpu_initialize",0,0,host.image_base);
-    // The executing image (as native/engine_draw.cpp patches it), not a backing view.
-    if(iss::native_shadow::Enabled())
-        iss::native_shadow::Install(host.image_base,reinterpret_cast<const unsigned char*>(host.image_base+0x43D590));
-    iss::native_gbuffer::InstallCensus(host.image_base);
-    iss::native_gbuffer::Install(host.image_base);
-    iss::pause_guard::Install(host.image_base);
-    iss::native_passes::Install(host.image_base);
+    // native_shadow, native_gbuffer, pause_guard and native_passes patch inFAMOUS eboot offsets;
+    // none of them apply to this game, so they are not installed.
     Core::Emulator::Configure();
     if(const char *p=std::getenv("ISS_FEEDBACK_PAGE_READBACK");p&&p[0]=='1'){
         const unsigned char signature[]={0x8b,0x40,0x04,0x49,0x8b,0x8f,0xe8,0,0,0,0x89,0x41,0x08};
