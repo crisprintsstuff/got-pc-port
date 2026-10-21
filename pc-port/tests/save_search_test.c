@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "runtime.h"
+#include "game.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +15,7 @@ int main(void){
     Search search=(Search)save_resolve("dyIhnXq-0SM#libSceSaveData#1#libSceSaveData#257");CHECK(init&&search);CHECK(init(NULL)==0);
     int user=1000000000+(int)GetCurrentProcessId();char userdir[1300],base[1400],path[1500],file[1600];
     snprintf(userdir,sizeof(userdir),"%s\\%d",runtime_save_root(),user);CHECK(CreateDirectoryA(userdir,NULL));
-    snprintf(base,sizeof(base),"%s\\CUSA00004",userdir);CHECK(CreateDirectoryA(base,NULL));
+    snprintf(base,sizeof(base),"%s\\" GAME_TITLE_ID,userdir);CHECK(CreateDirectoryA(base,NULL));
     const char *names[]={"infamousssAuto0","infamousssUser0"};
     for(int i=0;i<2;++i){snprintf(path,sizeof(path),"%s\\%s",base,names[i]);CHECK(CreateDirectoryA(path,NULL));
         snprintf(path,sizeof(path),"%s\\%s.sce_sys",base,names[i]);CHECK(CreateDirectoryA(path,NULL));snprintf(file,sizeof(file),"%s\\param.bin",path);

@@ -161,6 +161,7 @@ uintptr_t runtime_resolve(const char *identity, int data) {
     uintptr_t fn = libc_resolve(identity);
     if (!fn) fn = kernel_resolve(identity);
     if (!fn) fn = rtc_resolve(identity);
+    if (!fn) fn = audio3d_resolve(identity);
     if (!fn) fn = sync_resolve(identity);
     if (!fn) fn = thread_resolve(identity);
     if (!fn) fn = time_resolve(identity);

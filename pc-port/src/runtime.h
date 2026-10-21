@@ -89,6 +89,7 @@ uint64_t runtime_bundled_module_count(void);
 uintptr_t kernel_resolve(const char *identity);
 uintptr_t kernel_resolve_data(const char *identity);
 uintptr_t rtc_resolve(const char *identity);
+uintptr_t audio3d_resolve(const char *identity);
 #ifdef __cplusplus
 }
 #endif
