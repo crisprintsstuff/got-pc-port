@@ -38,8 +38,9 @@ The game identity lives in `pc-port/scripts/game_id.py` and `pc-port/src/game.h`
     python pc-port/scripts/prepare.py --game "<game folder>" --out pc-port/out/got
     python pc-port/scripts/link_modules.py --game "<game folder>" --out pc-port/out/got
 
-Build steps (Windows 11, VS 2022 Build Tools, clang-cl, CMake, a shadPS4-perf checkout) are
-unchanged from upstream; see `docs/UPSTREAM-INFAMOUS-README.md`.
+Build steps (Windows 11, clang-cl, CMake, a shadPS4-perf checkout) are unchanged from upstream;
+see `docs/UPSTREAM-INFAMOUS-README.md`. Any Visual Studio 2022 or later with "Desktop development
+with C++" provides the Windows SDK; the scripts find it with vswhere (or set `VCVARS64`).
 
 ## License
 
