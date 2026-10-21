@@ -52,6 +52,9 @@ A private mirror keeps it (branch `port-base`):
     git submodule update --init --recursive
     git apply ../../pc-port/third_party/shadPS4-perf-local.patch
 
+Then `pc-port\scripts\build_deps.cmd` configures and builds `build-opt` (shadPS4-perf with
+clang-cl: the renderer's flags and libraries) and `build-sdl` (SDL3).
+
 ## License
 
 GPL-2.0-or-later, as upstream. See `pc-port/LICENSE` and `pc-port/THIRD_PARTY.md`.
