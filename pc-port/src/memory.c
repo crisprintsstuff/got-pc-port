@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CAPACITY UINT64_C(0x120000000)
 #define ERR_INVALID ((int32_t)UINT32_C(0x80020016))
 #define ERR_AGAIN ((int32_t)UINT32_C(0x80020023))
 #define ERR_NOMEM ((int32_t)UINT32_C(0x8002000c))
@@ -24,6 +23,29 @@ static void (*map_hook)(uint64_t,uint64_t,uint8_t *);
 static uint64_t round_up(uint64_t value, uint64_t alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
 }
+// Direct memory as a base PS4 reports it: 5248 MiB for the game, less its flexible memory (the
+// process parameter's flexible_memory_size plus 64 MiB of system flexible memory; 512 MiB in
+// all when the parameter is absent), as in shadPS4. Games size fixed budgets against this, so a
+// smaller value can make "what remains" negative. Read on first use, after relocation.
+static uint64_t capacity_value;
+static uint64_t capacity(void) {
+    if (capacity_value) return capacity_value;
+    uint64_t flexible = UINT64_C(512) << 20;
+    const unsigned char *process = runtime_process_param(), *parameters = NULL;
+    uint64_t size = 0, parameters_size = 0;
+    if (process) memcpy(&size, process, 8);
+    if (size >= 0x48) memcpy(&parameters, process + 0x40, 8);
+    if (parameters) memcpy(&parameters_size, parameters, 8);
+    if (parameters_size >= 0x18) {
+        const uint64_t *flexible_size = NULL; memcpy(&flexible_size, parameters + 0x10, 8);
+        if (flexible_size) flexible = *flexible_size + (UINT64_C(64) << 20);
+    }
+    uint64_t total = UINT64_C(5248) << 20;
+    capacity_value = flexible < total ? (total - flexible) & ~UINT64_C(0x1fffff) : UINT64_C(0x120000000);
+    printf("Direct memory: %llu MiB (flexible %llu MiB)\n", (unsigned long long)(capacity_value >> 20), (unsigned long long)(flexible >> 20));
+    return capacity_value;
+}
+#define CAPACITY capacity()
 static int ensure_backing(void) {
     if (!backing) backing = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE | SEC_RESERVE,
                                               (DWORD)(CAPACITY >> 32), (DWORD)CAPACITY, NULL);

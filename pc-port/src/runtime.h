@@ -89,6 +89,8 @@ int32_t GUEST_ABI memory_batch_map2(void *entries, int32_t count, int32_t *done,
 int32_t GUEST_ABI memory_batch_map(void *entries, int32_t count, int32_t *done);
 // The bundled modules linked after the eboot (libc.prx, Fios2); 0 when the runtime libc stands in.
 uint64_t runtime_bundled_module_count(void);
+// The eboot's process parameters (sceProcParam), once runtime_configure has run.
+const unsigned char *runtime_process_param(void);
 uintptr_t kernel_resolve(const char *identity);
 uintptr_t kernel_resolve_data(const char *identity);
 uintptr_t rtc_resolve(const char *identity);

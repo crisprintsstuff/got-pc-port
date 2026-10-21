@@ -98,6 +98,7 @@ static GuestTls *current_tls(void) {
 }
 void runtime_set_thread_handle(void *handle) { current_tls()->tcb[2] = (uintptr_t)handle; }
 uint64_t runtime_bundled_module_count(void) { return module_count ? module_count - 1 : 0; }
+const unsigned char *runtime_process_param(void) { return (const unsigned char *)(uintptr_t)process_param; }
 const char *runtime_api_name(const char *identity) {
     for (size_t i = 0; i < sizeof(api_names) / sizeof(*api_names); ++i)
         if (!strcmp(identity, api_names[i].identity)) return api_names[i].api;
