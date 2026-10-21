@@ -3,6 +3,7 @@
 
 #include <bitset>
 #include <boost/preprocessor/stringize.hpp>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
@@ -3988,6 +3989,18 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
             break;
         }
         case PM4ItOpcode::ReleaseMem: {
+            {   // ISS_IRQ_LOG=1 (got-pc-port): which compute fences arrive and how they are handled.
+                static const bool irq_log = [] { const char* p = std::getenv("ISS_IRQ_LOG"); return p && p[0] == '1'; }();
+                static std::atomic<u32> logged{0};
+                if (irq_log) {
+                    const auto* r = reinterpret_cast<const PM4CmdReleaseMem*>(header);
+                    const u32 n = ++logged;
+                    if (n <= 60 || n % 500 == 0)
+                        std::fprintf(stderr, "ASC_RELEASE_MEM n=%u vqid=%u pipe=%u int_sel=%u data_sel=%u deferred=%d split=%d\n", n,
+                                     vqid, queue.pipe_id, u32(r->int_sel.Value()), u32(r->data_sel.Value()),
+                                     int(pipe_deferred), int(CpSplitActive()));
+                }
+            }
             if (pipe_deferred) {
                 break; // Queued to the draw pipe worker (RunDeferredFence).
             }
