@@ -221,9 +221,11 @@ int32_t GUEST_ABI memory_allocate_direct(int64_t start, int64_t end, uint64_t le
 // ---- guest address arena -------------------------------------------------------------------
 // The PS4 maps memory in 16 KiB pages; a plain Windows view starts on 64 KiB, so consecutive
 // 16 KiB mappings collided (the second one failed). Like shadPS4, the guest range is reserved as
-// one placeholder and every mapping is split out of it at page granularity and replaced by a view
-// with MapViewOfFile3 (Windows 10 1803+). Called with memory_lock held. Mappings never leave the
-// arena (unmap keeps them), so the used list only grows.
+// placeholders and every mapping is split out of one at page granularity and replaced by a view
+// with MapViewOfFile3 (Windows 10 1803+). Windows already has thread stacks and heaps at random
+// places in the range, so each free stretch of it becomes its own placeholder region; a mapping
+// stays inside one region. Called with memory_lock held. Mappings never leave the arena (unmap
+// keeps them), so the used list only grows.
 #define ARENA_START UINT64_C(0x400000000)   // 16 GiB
 #define ARENA_END UINT64_C(0x10000000000)   // 1 TiB, inside the GPU's 40-bit range
 #ifndef MEM_RESERVE_PLACEHOLDER
@@ -240,20 +242,41 @@ typedef void *(WINAPI *MapViewOfFile3Fn)(HANDLE, HANDLE, void *, ULONG64, SIZE_T
 static MapViewOfFile3Fn map_view3;
 static int arena_state; // 0 untried, 1 reserved, -1 unavailable
 typedef struct { uint64_t start, end; } Range;
-static Range arena_used[16384];
-static unsigned arena_count;
+static Range arena_regions[256], arena_used[16384];
+static unsigned region_count, arena_count;
 static int arena_available(void) {
     if (arena_state) return arena_state > 0;
     HMODULE base = GetModuleHandleW(L"kernelbase.dll");
     VirtualAlloc2Fn alloc2 = base ? (VirtualAlloc2Fn)(void *)GetProcAddress(base, "VirtualAlloc2") : NULL;
     map_view3 = base ? (MapViewOfFile3Fn)(void *)GetProcAddress(base, "MapViewOfFile3") : NULL;
-    void *arena = alloc2 && map_view3 ? alloc2(NULL, (void *)ARENA_START, (SIZE_T)(ARENA_END - ARENA_START),
-                                               MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0) : NULL;
-    arena_state = arena == (void *)ARENA_START ? 1 : -1;
-    printf("Guest address arena: %s\n", arena_state > 0 ? "reserved 0x400000000-0x10000000000 (16 KiB mappings)" : "unavailable, 64 KiB views");
+    uint64_t reserved = 0; DWORD failure = 0;
+    for (uint64_t at = ARENA_START; alloc2 && map_view3 && at < ARENA_END && region_count < 256;) {
+        MEMORY_BASIC_INFORMATION info;
+        if (!VirtualQuery((void *)(uintptr_t)at, &info, sizeof(info))) break;
+        uint64_t end = (uintptr_t)info.BaseAddress + info.RegionSize;
+        if (end > ARENA_END) end = ARENA_END;
+        if (info.State == MEM_FREE) {
+            uint64_t start = round_up(at, 65536), stop = end & ~UINT64_C(65535);
+            if (stop > start && alloc2(NULL, (void *)(uintptr_t)start, (SIZE_T)(stop - start),
+                                       MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0)) {
+                arena_regions[region_count++] = (Range){start, stop}; reserved += stop - start;
+            } else if (stop > start) failure = GetLastError();
+        }
+        at = end;
+    }
+    arena_state = region_count ? 1 : -1;
+    if (region_count) printf("Guest address arena: %u regions, %llu GiB in 0x400000000-0x10000000000 (16 KiB mappings)\n",
+                             region_count, (unsigned long long)(reserved >> 30));
+    else printf("Guest address arena: unavailable (%s, winerror %lu), 64 KiB views\n",
+                alloc2 && map_view3 ? "no reservation" : "no placeholder API", failure);
     return arena_state > 0;
 }
-static int arena_contains(uint64_t start, uint64_t length) { return start >= ARENA_START && length <= ARENA_END - start; }
+static const Range *arena_region(uint64_t start, uint64_t length) {
+    for (unsigned i = 0; i < region_count; ++i)
+        if (start >= arena_regions[i].start && start < arena_regions[i].end && length <= arena_regions[i].end - start) return &arena_regions[i];
+    return NULL;
+}
+static int arena_contains(uint64_t start, uint64_t length) { return arena_region(start, length) != NULL; }
 static unsigned arena_index(uint64_t start) { // first used range ending after start
     unsigned lo = 0, hi = arena_count;
     while (lo < hi) { unsigned mid = (lo + hi) / 2; if (arena_used[mid].end <= start) lo = mid + 1; else hi = mid; }
@@ -264,19 +287,25 @@ static int arena_free(uint64_t start, uint64_t length) {
     return i == arena_count || arena_used[i].start >= start + length;
 }
 static uint64_t arena_find(uint64_t length, uint64_t alignment) {
-    uint64_t candidate = round_up(ARENA_START, alignment);
-    for (unsigned i = 0; i <= arena_count; ++i) {
-        uint64_t gap_end = i < arena_count ? arena_used[i].start : ARENA_END;
-        if (candidate <= gap_end && length <= gap_end - candidate) return candidate;
-        if (i < arena_count) candidate = round_up(arena_used[i].end, alignment);
+    for (unsigned r = 0; r < region_count; ++r) {
+        const Range *region = &arena_regions[r];
+        uint64_t candidate = round_up(region->start, alignment);
+        for (unsigned i = arena_index(region->start); ; ++i) {
+            uint64_t gap_end = i < arena_count && arena_used[i].start < region->end ? arena_used[i].start : region->end;
+            if (candidate <= gap_end && length <= gap_end - candidate) return candidate;
+            if (gap_end == region->end) break;
+            candidate = round_up(arena_used[i].end, alignment);
+        }
     }
     return 0;
 }
 // Splits [start, start+length) out of its free placeholder and maps section+offset there.
 static void *arena_map(HANDLE section, uint64_t offset, uint64_t start, uint64_t length) {
-    if (arena_count == sizeof(arena_used) / sizeof(*arena_used) || !arena_free(start, length)) return NULL;
+    const Range *region = arena_region(start, length);
+    if (!region || arena_count == sizeof(arena_used) / sizeof(*arena_used) || !arena_free(start, length)) return NULL;
     unsigned i = arena_index(start);
-    uint64_t gap_start = i ? arena_used[i - 1].end : ARENA_START, gap_end = i < arena_count ? arena_used[i].start : ARENA_END;
+    uint64_t gap_start = i && arena_used[i - 1].end > region->start ? arena_used[i - 1].end : region->start;
+    uint64_t gap_end = i < arena_count && arena_used[i].start < region->end ? arena_used[i].start : region->end;
     if ((gap_start != start || gap_end != start + length) &&
         !VirtualFree((void *)(uintptr_t)start, (SIZE_T)length, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) return NULL;
     void *view = map_view3(section, GetCurrentProcess(), (void *)(uintptr_t)start, offset, (SIZE_T)length,
