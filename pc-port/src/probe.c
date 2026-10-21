@@ -165,7 +165,8 @@ static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
 static void hang_report(const char *why, int resume) {
     char path[MAX_PATH]; GetModuleFileNameA(NULL, path, sizeof(path));
     char *slash = strrchr(path, '\\'); if (slash) strcpy(slash + 1, "hang-report.txt");
-    HANDLE out = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    // Each report replaces the previous one: the newest picture of the threads is the useful one.
+    HANDLE out = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (out == INVALID_HANDLE_VALUE) out = GetStdHandle(STD_ERROR_HANDLE);
     runtime_report_write(out, "HANG_REPORT begin (%s) tick_ms=%llu\r\n", why, (unsigned long long)GetTickCount64());
     runtime_report_threads(out, resume);
@@ -180,11 +181,13 @@ static BOOL WINAPI console_break(DWORD event) {
     fflush(NULL);
     ExitProcess(130);
 }
-// ISS_HANG_REPORT=<seconds>: one report after that long, and the game keeps running.
+// ISS_HANG_REPORT=<seconds>: a report every <seconds> while the game runs (the file always holds
+// the latest), so closing the window at any time after the first one leaves a recent report.
 static DWORD WINAPI hang_timer(void *seconds) {
-    Sleep((DWORD)(uintptr_t)seconds * 1000);
-    hang_report("timer", 1);
-    return 0;
+    for (;;) {
+        Sleep((DWORD)(uintptr_t)seconds * 1000);
+        hang_report("timer", 1);
+    }
 }
 int main(int argc, char **argv) {
     SetConsoleCtrlHandler(console_break, TRUE);
