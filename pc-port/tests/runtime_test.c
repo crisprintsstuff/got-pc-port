@@ -159,7 +159,8 @@ int main(void) {
     const unsigned char unsupported[] = {0x64,0x48,0x8b,0x04,0x25,56,0,0,0};
     CHECK(!emulate(unsupported, sizeof(unsupported), &c));
     CHECK(runtime_tls_fault_count() == 6);
-    CHECK(memory_direct_size() == UINT64_C(0x120000000));
+    // No flexible_memory_size in the test process parameters: 5248 MiB less the 512 MiB default.
+    CHECK(memory_direct_size() == (UINT64_C(5248) - 512) << 20);
     int64_t physical = -1;
     CHECK(memory_allocate_direct(0, (int64_t)memory_direct_size(), 1, 16384, 0, &physical) != 0 && physical == -1);
     CHECK(memory_allocate_direct(0, (int64_t)memory_direct_size(), 65536, 65536, 0, &physical) == 0 && !physical);
