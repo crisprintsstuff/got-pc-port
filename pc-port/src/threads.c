@@ -120,7 +120,8 @@ static int32_t GUEST_ABI create(Thread **out, Attribute **attr, Entry entry, voi
     if (!t->host) { free(t); return error(35); }
     AcquireSRWLockExclusive(&registry); t->next = threads; threads = t; *out = t;
     ReleaseSRWLockExclusive(&registry); ResumeThread(t->host);
-    printf("Created native guest thread: %s id=%lu\n", t->name, t->id); return 0;
+    printf("Created native guest thread: %s id=%lu entry=0x%llx arg=0x%llx\n", t->name, t->id,
+           (unsigned long long)(uintptr_t)entry, (unsigned long long)(uintptr_t)arg); return 0;
 }
 static int32_t GUEST_ABI join(Thread *p, void **result) {
     Thread *t = thread(p); if (!t || t->detached || t->joined) return error(22);

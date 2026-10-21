@@ -3018,6 +3018,19 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::EventWriteEop: {
+                {   // ISS_IRQ_LOG=1 (got-pc-port): graphics end-of-pipe fences, first 40 then every 500th.
+                    static const bool irq_log = [] { const char* p = std::getenv("ISS_IRQ_LOG"); return p && p[0] == '1'; }();
+                    static std::atomic<u32> logged{0};
+                    if (irq_log) {
+                        const auto* e = reinterpret_cast<const PM4CmdEventWriteEop*>(header);
+                        const u32 n = ++logged;
+                        if (n <= 40 || n % 500 == 0)
+                            std::fprintf(stderr, "GFX_EOP n=%u int_sel=%u data_sel=%u dst=0x%llx data=0x%llx\n", n,
+                                         u32(e->int_sel.Value()), u32(e->data_sel.Value()),
+                                         static_cast<unsigned long long>(reinterpret_cast<VAddr>(e->Address<u8>())),
+                                         static_cast<unsigned long long>(e->DataQWord()));
+                    }
+                }
                 if (pipe_deferred) {
                     break; // Queued to the draw pipe worker (RunDeferredFence).
                 }
@@ -3996,9 +4009,11 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
                     const auto* r = reinterpret_cast<const PM4CmdReleaseMem*>(header);
                     const u32 n = ++logged, k = ++per_vqid[vqid < 64 ? vqid : 63];
                     if (k <= 10 || k % 500 == 0)
-                        std::fprintf(stderr, "ASC_RELEASE_MEM n=%u vqid=%u pipe=%u int_sel=%u data_sel=%u deferred=%d split=%d\n", n,
+                        std::fprintf(stderr, "ASC_RELEASE_MEM n=%u vqid=%u pipe=%u int_sel=%u data_sel=%u deferred=%d split=%d dst=0x%llx data=0x%llx\n", n,
                                      vqid, queue.pipe_id, u32(r->int_sel.Value()), u32(r->data_sel.Value()),
-                                     int(pipe_deferred), int(CpSplitActive()));
+                                     int(pipe_deferred), int(CpSplitActive()),
+                                     static_cast<unsigned long long>(r->Address<VAddr>()),
+                                     static_cast<unsigned long long>(r->DataQWord()));
                 }
             }
             if (pipe_deferred) {
