@@ -248,6 +248,10 @@ int main(int argc, char **argv) {
             if (binding_kinds[r->value]) {
                 if (binding_kinds[r->value] != r->kind) fail("native binding type mismatch");
                 value = (uintptr_t)image + bindings[r->value] + r->addend;
+                if (r->kind == 1) { // optional diagnostic wrappers around a native export
+                    uintptr_t wrapper = runtime_wrap_binding(names[r->value], value - r->addend);
+                    if (wrapper) value = wrapper + r->addend;
+                }
             }
             uintptr_t host = runtime_resolve(names[r->value], r->kind == 2);
             if (host) value = host + r->addend;

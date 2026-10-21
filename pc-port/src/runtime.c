@@ -180,6 +180,40 @@ uintptr_t runtime_resolve(const char *identity, int data) {
     return fn ? fn : gpu_resolve(identity);
 }
 
+typedef void *(GUEST_ABI *MemalignFn)(void *, uint64_t, uint64_t);
+typedef void *(GUEST_ABI *ReallocalignFn)(void *, void *, uint64_t, uint64_t);
+static MemalignFn native_memalign;
+static ReallocalignFn native_reallocalign;
+static volatile LONG64 traced_bytes;
+static void trace_allocation(const char *what, void *mspace, uint64_t size, const void *result, const void *caller) {
+    uint64_t total = (uint64_t)InterlockedAdd64(&traced_bytes, (LONG64)size);
+    if (size < 262144 && result) return;
+    uintptr_t at = (uintptr_t)caller;
+    fprintf(stderr, "MSPACE %s mspace=%p bytes=%llu result=%p caller=+0x%llx requested_total=%llu MB\n", what, mspace,
+            (unsigned long long)size, result,
+            (unsigned long long)(at >= (uintptr_t)source_image && at - (uintptr_t)source_image < source_size ? at - (uintptr_t)source_image : at),
+            (unsigned long long)(total >> 20));
+}
+static void *GUEST_ABI trace_memalign(void *m, uint64_t align, uint64_t size) {
+    void *r = native_memalign(m, align, size);
+    trace_allocation("memalign", m, size, r, __builtin_return_address(0));
+    return r;
+}
+static void *GUEST_ABI trace_reallocalign(void *m, void *p, uint64_t align, uint64_t size) {
+    void *r = native_reallocalign(m, p, align, size);
+    trace_allocation("reallocalign", m, size, r, __builtin_return_address(0));
+    return r;
+}
+uintptr_t runtime_wrap_binding(const char *identity, uintptr_t native) {
+    static int enabled = -1;
+    if (enabled < 0) { const char *v = getenv("ISS_TRACE_MSPACE"); enabled = v && v[0] == '1'; }
+    if (!enabled || !strstr(identity, "#libc#1#libc#257")) return 0;
+    const char *api = runtime_api_name(identity);
+    if (!strcmp(api, "sceLibcMspaceMemalign")) { native_memalign = (MemalignFn)native; return (uintptr_t)trace_memalign; }
+    if (!strcmp(api, "sceLibcMspaceReallocalign")) { native_reallocalign = (ReallocalignFn)native; return (uintptr_t)trace_reallocalign; }
+    return 0;
+}
+
 static DWORD64 *context_register(CONTEXT *c, ZydisRegister r) {
     switch (r) {
     case ZYDIS_REGISTER_RAX: return &c->Rax; case ZYDIS_REGISTER_RCX: return &c->Rcx;
