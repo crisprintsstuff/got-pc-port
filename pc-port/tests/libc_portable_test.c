@@ -30,8 +30,8 @@ static void test_format(void) {
     char b[256];
     int n;
     n = sn(b, sizeof(b), "%d %i %u %x %X %o", -5, 42, 4000000000u, 0xbeef, 0xBEEF, 8); format("-5 42 4000000000 beef BEEF 10", 29, b, n);
-    // long is 64-bit on the PS4.
-    n = sn(b, sizeof(b), "%ld %lu %lld %zu %jd", -9000000000L, 18000000000UL, -1LL, (size_t)7, (long)-2); format("-9000000000 18000000000 -1 7 -2", 31, b, n);
+    // long is 64-bit on the PS4 (not on Windows), so guest longs are passed as int64_t here.
+    n = sn(b, sizeof(b), "%ld %lu %lld %zu %jd", INT64_C(-9000000000), UINT64_C(18000000000), -1LL, (uint64_t)7, (int64_t)-2); format("-9000000000 18000000000 -1 7 -2", 31, b, n);
     n = sn(b, sizeof(b), "%hhd %hd %hhu", 300, 70000, 511); format("44 4464 255", 11, b, n);
     n = sn(b, sizeof(b), "[%5d|%-5d|%05d|%+d|% d]", 42, 42, 42, 42, 42); format("[   42|42   |00042|+42| 42]", 27, b, n);
     n = sn(b, sizeof(b), "[%*d|%-*d|%.*f|%.*s]", 6, 1, 4, 2, 2, 3.14159, 3, "abcdef"); format("[     1|2   |3.14|abc]", 22, b, n);
@@ -54,11 +54,11 @@ static void test_format(void) {
 
 static void test_scan(void) {
     SscanfFn ss = (SscanfFn)(void *)libc_guest_sscanf;
-    int i = 0; long l = 0; unsigned long long u = 0; float f = 0; double d = 0; char s[16] = {0}, set[16] = {0};
+    int i = 0; int64_t l = 0; unsigned long long u = 0; float f = 0; double d = 0; char s[16] = {0}, set[16] = {0};
     short h = 0; signed char c = 0; int consumed = 0;
     int n = ss("12 -9000000000 18000000000 2.5 3.25 word abc 7 9 rest", "%d %ld %llu %f %lf %15s %15[a-z] %hd %hhd%n",
                &i, &l, &u, &f, &d, s, set, &h, &c, &consumed);
-    CHECK(n == 9); CHECK(i == 12); CHECK(l == -9000000000L); CHECK(u == 18000000000ULL);
+    CHECK(n == 9); CHECK(i == 12); CHECK(l == INT64_C(-9000000000)); CHECK(u == 18000000000ULL);
     CHECK(f == 2.5f); CHECK(d == 3.25); CHECK(!strcmp(s, "word")); CHECK(!strcmp(set, "abc"));
     CHECK(h == 7); CHECK(c == 9); CHECK(consumed == 48);
     int a = 0, z = 0;
