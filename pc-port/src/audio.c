@@ -41,10 +41,18 @@ static int32_t GUEST_ABI output_audio(int handle,const void *data){return output
 static int32_t GUEST_ABI outputs_audio(const Output *list,uint32_t count){if(!list||!count||count>25)return err(4);for(uint32_t i=0;i<count;++i){int32_t e=output_one(list[i].handle,list[i].data,i+1==count);if(e)return e;}return 0;}
 static int32_t GUEST_ABI close_audio(int handle){AcquireSRWLockExclusive(&lock);Port *p=port(handle);if(!p){ReleaseSRWLockExclusive(&lock);return err(1);}SDL_DestroyAudioStream(p->stream);p->active=0;ReleaseSRWLockExclusive(&lock);return 0;}
 static int32_t GUEST_ABI volume_audio(int handle,uint32_t mask,const int32_t *values){if(!values)return err(4);AcquireSRWLockExclusive(&lock);Port *p=port(handle);if(!p){ReleaseSRWLockExclusive(&lock);return err(1);}for(int i=0;i<p->channels;++i)if(mask&(1u<<i)){if(values[i]<0||values[i]>32768){ReleaseSRWLockExclusive(&lock);return err(9);}p->volume[i]=values[i];}ReleaseSRWLockExclusive(&lock);return 0;}
+// SceAudioOutPortState: output (1 primary), channels, reserved, volume, reroute counter, flags.
+typedef struct {uint16_t output;uint8_t channels,reserved;int16_t volume;uint16_t reroute;uint64_t flags,reserved2[2];} PortState;
+static int32_t GUEST_ABI port_state(int handle,PortState *out){
+    if(!out)return err(4);AcquireSRWLockShared(&lock);Port *p=port(handle);
+    if(!p){ReleaseSRWLockShared(&lock);return err(1);}
+    memset(out,0,sizeof(*out));out->output=1;out->channels=(uint8_t)p->channels;out->volume=127;
+    ReleaseSRWLockShared(&lock);return 0;
+}
 uintptr_t audio_resolve(const char *identity){
     if(!strstr(identity,"#libSceAudioOut#1#libSceAudioOut#257"))return 0;const char *api=runtime_api_name(identity);
 #define API(n,f) if(!strcmp(api,n))return (uintptr_t)f
-    API("sceAudioOutInit",init);API("sceAudioOutOpen",open_audio);API("sceAudioOutOutput",output_audio);API("sceAudioOutOutputs",outputs_audio);API("sceAudioOutClose",close_audio);API("sceAudioOutSetVolume",volume_audio);
+    API("sceAudioOutInit",init);API("sceAudioOutOpen",open_audio);API("sceAudioOutOutput",output_audio);API("sceAudioOutOutputs",outputs_audio);API("sceAudioOutClose",close_audio);API("sceAudioOutSetVolume",volume_audio);API("sceAudioOutGetPortState",port_state);
 #undef API
     return 0;
 }

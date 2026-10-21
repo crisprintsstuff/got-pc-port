@@ -75,6 +75,20 @@ int32_t GUEST_ABI memory_allocate_direct(int64_t start, int64_t end, uint64_t le
                                         uint64_t alignment, int32_t type, int64_t *result);
 int32_t GUEST_ABI memory_map_direct(void **address, uint64_t length, int32_t prot,
                                    int32_t flags, int64_t physical, uint64_t alignment);
+int32_t GUEST_ABI memory_map_flexible(void **address, uint64_t length, int32_t prot, int32_t flags,
+                                     const char *name);
+int32_t GUEST_ABI memory_protect(const void *address, uint64_t length, int32_t prot);
+int32_t GUEST_ABI memory_query_protection(void *address, void **start, void **end, uint32_t *prot);
+int32_t GUEST_ABI memory_release_direct(int64_t start, uint64_t length);
+int32_t GUEST_ABI memory_unmap(void *address, uint64_t length);
+// SceKernelBatchMapEntry arrays; batch_map is batch_map2 with the fixed-address flag.
+int32_t GUEST_ABI memory_batch_map2(void *entries, int32_t count, int32_t *done, int32_t flags);
+int32_t GUEST_ABI memory_batch_map(void *entries, int32_t count, int32_t *done);
+// The bundled modules linked after the eboot (libc.prx, Fios2); 0 when the runtime libc stands in.
+uint64_t runtime_bundled_module_count(void);
+uintptr_t kernel_resolve(const char *identity);
+uintptr_t kernel_resolve_data(const char *identity);
+uintptr_t rtc_resolve(const char *identity);
 #ifdef __cplusplus
 }
 #endif

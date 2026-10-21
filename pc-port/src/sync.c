@@ -118,18 +118,27 @@ static Mutex *mutex(Mutex **p) {
     Mutex *m = mutexes; while (m && (m != *p || !m->active)) m = m->next;
     ReleaseSRWLockExclusive(&registry); return m;
 }
-static int acquire(Mutex **p, int try_only) {
+// timeout_us: UINT64_MAX waits indefinitely.
+static int acquire_timed(Mutex **p, int try_only, uint64_t timeout_us) {
     Mutex *m = mutex(p); if (!m) return 22;
     DWORD tid = GetCurrentThreadId(); AcquireSRWLockExclusive(&m->lock);
     if (!m->active) { ReleaseSRWLockExclusive(&m->lock); return 22; }
     if (m->owner == tid && m->type == 2) { ++m->depth; ReleaseSRWLockExclusive(&m->lock); return 0; }
     if (m->owner == tid && (m->type == 1 || m->type == 4) && !try_only) { ReleaseSRWLockExclusive(&m->lock); return 11; }
     if (m->owner && try_only) { ReleaseSRWLockExclusive(&m->lock); return 16; }
+    uint64_t deadline = timeout_us == UINT64_MAX ? UINT64_MAX : runtime_process_time_us() + timeout_us;
     while (m->owner) {
-        ++m->waiters; SleepConditionVariableSRW(&m->changed, &m->lock, INFINITE, 0); --m->waiters;
+        DWORD ms = INFINITE;
+        if (deadline != UINT64_MAX) {
+            uint64_t now = runtime_process_time_us();
+            if (now >= deadline) { ReleaseSRWLockExclusive(&m->lock); return 60; }
+            ms = (DWORD)((deadline - now + 999) / 1000);
+        }
+        ++m->waiters; SleepConditionVariableSRW(&m->changed, &m->lock, ms, 0); --m->waiters;
     }
     m->owner = tid; m->depth = 1; ReleaseSRWLockExclusive(&m->lock); return 0;
 }
+static int acquire(Mutex **p, int try_only) { return acquire_timed(p, try_only, UINT64_MAX); }
 static int GUEST_ABI mutex_lock(Mutex **p) { return acquire(p, 0); }
 static int GUEST_ABI mutex_try(Mutex **p) { return acquire(p, 1); }
 static int GUEST_ABI mutex_unlock(Mutex **p) {
@@ -180,6 +189,14 @@ WRAP1(mutex_try, Mutex **) WRAP1(mutex_unlock, Mutex **) WRAP1(mutex_destroy, Mu
 static int32_t GUEST_ABI orb_attr_type(Attr **p, int n) { return orbis(attr_type(p,n)); }
 static int32_t GUEST_ABI orb_attr_protocol(Attr **p, int n) { return orbis(attr_protocol(p,n)); }
 static int32_t GUEST_ABI orb_mutex_init(Mutex **p, Attr **a, const char *n) { return orbis(mutex_init(p,a,n)); }
+static int32_t GUEST_ABI orb_mutex_timedlock(Mutex **p, uint32_t us) { return orbis(acquire_timed(p, 0, us)); }
+// POSIX spellings return the errno value itself.
+static int posix(int32_t orbis_code) { return orbis_code ? orbis_code & 0xffff : 0; }
+static int GUEST_ABI posix_cond_wait(Cond **p, Mutex **m) { return cond_wait_impl(p, m, INFINITE); }
+static int GUEST_ABI posix_cond_broadcast(Cond **p) { return posix(orb_cond_broadcast(p)); }
+static int GUEST_ABI posix_rw_read(Rwlock **p) { return posix(rw_read(p)); }
+static int GUEST_ABI posix_rw_write(Rwlock **p) { return posix(rw_write(p)); }
+static int GUEST_ABI posix_rw_unlock(Rwlock **p) { return posix(rw_unlock(p)); }
 uintptr_t sync_resolve(const char *name) {
     const char *api = runtime_api_name(name);
     if (strstr(name,"#libkernel#1#libkernel#257")) {
@@ -196,6 +213,14 @@ uintptr_t sync_resolve(const char *name) {
         if (!strcmp(api,"scePthreadCondSignal")) return (uintptr_t)orb_cond_signal;
         if (!strcmp(api,"scePthreadCondBroadcast")) return (uintptr_t)orb_cond_broadcast;
         if (!strcmp(api,"scePthreadCondDestroy")) return (uintptr_t)orb_cond_destroy;
+        if (!strcmp(api,"scePthreadMutexTimedlock")) return (uintptr_t)orb_mutex_timedlock;
+    }
+    if (strstr(name,"#libkernel#1#libkernel#257") || strstr(name,"#libScePosix#1#libkernel#257")) {
+        if (!strcmp(api,"pthread_cond_wait")) return (uintptr_t)posix_cond_wait;
+        if (!strcmp(api,"pthread_cond_broadcast")) return (uintptr_t)posix_cond_broadcast;
+        if (!strcmp(api,"pthread_rwlock_rdlock")) return (uintptr_t)posix_rw_read;
+        if (!strcmp(api,"pthread_rwlock_wrlock")) return (uintptr_t)posix_rw_write;
+        if (!strcmp(api,"pthread_rwlock_unlock")) return (uintptr_t)posix_rw_unlock;
     }
 #define RESOLVE(n,fn) if (!strcmp(name,n "#libkernel#1#libkernel#257")||!strcmp(name,n "#libScePosix#1#libkernel#257")) return (uintptr_t)fn
     RESOLVE("F8bUHwAG284",orb_attr_init); RESOLVE("n2MMpvU8igI",orb_attr_init);

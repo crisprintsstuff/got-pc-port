@@ -11,7 +11,7 @@ typedef struct {
     uint32_t blksize,flags,gen; int32_t spare; Timestamp birthtime;
 } GuestStat;
 _Static_assert(sizeof(GuestStat)==120,"PS4 stat layout");
-typedef struct { HANDLE host; SRWLOCK lock; int active; char path[1024]; } File;
+typedef struct { HANDLE host; SRWLOCK lock; int active; uint64_t entries_read; char path[1024]; } File;
 static SRWLOCK log_lock = SRWLOCK_INIT;
 static FILE *io_log;
 static void trace_io(const char *op,int fd,const char *path,int64_t offset,uint64_t requested,uint64_t completed,DWORD native,int err) {
@@ -103,7 +103,7 @@ static int32_t GUEST_ABI open_file(const char *path,int32_t flags,uint16_t mode)
     int fd;
     for(fd=3;fd<4096&&files[fd].active;++fd){}
     if(fd==4096){ReleaseSRWLockExclusive(&registry);CloseHandle(host);return error(24);}
-    files[fd].host=host;files[fd].active=1;InitializeSRWLock(&files[fd].lock);
+    files[fd].host=host;files[fd].active=1;files[fd].entries_read=0;InitializeSRWLock(&files[fd].lock);
     snprintf(files[fd].path,sizeof(files[fd].path),"%s",path);
     trace_io("open",fd,path,0,0,0,0,0);
     if(flags&8){LARGE_INTEGER zero={0};SetFilePointerEx(host,zero,NULL,FILE_END);}
@@ -173,6 +173,45 @@ static int32_t GUEST_ABI truncate_file(const char *path,int64_t size){int fd=ope
 static int32_t GUEST_ABI mkdir_file(const char *path,uint16_t mode){(void)mode;char host[2048];int e=translate(path,host,sizeof(host),1);if(e)return error(e);return CreateDirectoryA(host,NULL)?0:error(windows_error());}
 static int32_t GUEST_ABI unlink_file(const char *path){char host[2048];int e=translate(path,host,sizeof(host),1);if(e)return error(e);return DeleteFileA(host)?0:error(windows_error());}
 static int32_t GUEST_ABI rename_file(const char *from,const char *to){char a[2048],b[2048];int e=translate(from,a,sizeof(a),1);if(e)return error(e);e=translate(to,b,sizeof(b),1);if(e)return error(e);return MoveFileExA(a,b,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)?0:error(windows_error());}
+// Directory entries in FreeBSD's struct dirent: fileno, reclen, type, namlen, name. Each call
+// enumerates the directory again and skips the entries already returned on this descriptor.
+static int64_t directory_entries(int fd,char *buffer,uint64_t size,int64_t *base){
+    if(!buffer)return error(14);
+    File *f=acquire_file(fd);if(!f)return error(9);
+    char host[2048],pattern[2100];int e=translate(f->path,host,sizeof(host),0);
+    if(e){release_file(f);return error(e);}
+    snprintf(pattern,sizeof(pattern),"%s\\*",host);
+    WIN32_FIND_DATAA found;HANDLE h=FindFirstFileA(pattern,&found);
+    if(h==INVALID_HANDLE_VALUE){e=windows_error();release_file(f);return error(e==2?20:e);}
+    uint64_t index=0,written=0;
+    do{
+        if(index++<f->entries_read)continue;
+        size_t n=strlen(found.cFileName);
+        if(n>255){++f->entries_read;continue;}
+        uint16_t length=(uint16_t)((8+n+1+3)&~(size_t)3);
+        if(written+length>size)break;
+        char *out=buffer+written;uint32_t number=(uint32_t)index;uint8_t type=(found.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)?4:8,namlen=(uint8_t)n;
+        memcpy(out,&number,4);memcpy(out+4,&length,2);out[6]=(char)type;out[7]=(char)namlen;
+        memset(out+8,0,length-8);memcpy(out+8,found.cFileName,n);
+        written+=length;++f->entries_read;
+    }while(FindNextFileA(h,&found));
+    FindClose(h);
+    uint64_t consumed=f->entries_read;
+    release_file(f);
+    if(base)*base=(int64_t)consumed;
+    if(!written&&index>consumed)return error(22); // buffer smaller than one entry
+    return (int64_t)written;
+}
+static int64_t GUEST_ABI get_dents(int fd,char *buffer,uint64_t size){return directory_entries(fd,buffer,size,NULL);}
+static int64_t GUEST_ABI get_direntries(int fd,char *buffer,uint64_t size,int64_t *base){return directory_entries(fd,buffer,size,base);}
+static int32_t GUEST_ABI rmdir_file(const char *path){char host[2048];int e=translate(path,host,sizeof(host),1);if(e)return error(e);return RemoveDirectoryA(host)?0:error(windows_error());}
+// Windows has no POSIX modes or settable times worth mirroring; the path only has to exist.
+static int32_t GUEST_ABI exists_file(const char *path){char host[2048];int e=translate(path,host,sizeof(host),0);if(e)return error(e);return GetFileAttributesA(host)!=INVALID_FILE_ATTRIBUTES?0:error(windows_error());}
+static int32_t GUEST_ABI chmod_file(const char *path,uint32_t mode){(void)mode;return exists_file(path);}
+static int32_t GUEST_ABI utimes_file(const char *path,const void *times){(void)times;return exists_file(path);}
+static int posix_result(int64_t r){if(r<0){*runtime_errno()=(int32_t)r&65535;return -1;}return 0;}
+static int GUEST_ABI posix_fsync(int fd){return posix_result(fsync_file(fd));}
+static int GUEST_ABI posix_rmdir(const char *path){return posix_result(rmdir_file(path));}
 static int64_t GUEST_ABI posix_write(int fd,const void *p,uint64_t n){int64_t r=write_file(fd,p,n);if(r<0){*runtime_errno()=(int32_t)r&65535;return -1;}return r;}
 static int64_t GUEST_ABI posix_read(int fd,void *p,uint64_t n){int64_t r=read_file(fd,p,n);if(r<0){*runtime_errno()=(int32_t)r&65535;return -1;}return r;}
 static int64_t GUEST_ABI lseek_file(int fd,int64_t off,int origin){
@@ -191,9 +230,11 @@ static int fill_stat(HANDLE h,GuestStat *s){
 static int32_t GUEST_ABI fstat_file(int fd,GuestStat *s){File *f=acquire_file(fd);if(!f)return error(9);int e=fill_stat(f->host,s);release_file(f);return e?error(e):0;}
 static int32_t GUEST_ABI stat_file(const char *p,GuestStat *s){int fd=open_file(p,0,0);if(fd<0)return fd;int r=fstat_file(fd,s);close_file(fd);return r;}
 uintptr_t file_resolve(const char *identity){
-    if(!strstr(identity,"#libkernel#1#libkernel#257"))return 0;
+    if(!strstr(identity,"#libkernel#1#libkernel#257")&&!strstr(identity,"#libScePosix#1#libkernel#257"))return 0;
     const char *api=runtime_api_name(identity);
 #define API(n,f) if(!strcmp(api,n))return (uintptr_t)f
+    API("sceKernelGetdents",get_dents);API("sceKernelGetdirentries",get_direntries);API("sceKernelRmdir",rmdir_file);
+    API("sceKernelChmod",chmod_file);API("sceKernelUtimes",utimes_file);API("fsync",posix_fsync);API("rmdir",posix_rmdir);
     API("sceKernelOpen",open_file);API("sceKernelClose",close_file);API("sceKernelRead",read_file);
     API("sceKernelWrite",write_file);API("sceKernelPread",pread_file);API("sceKernelLseek",lseek_file);
     API("sceKernelFstat",fstat_file);API("sceKernelStat",stat_file);

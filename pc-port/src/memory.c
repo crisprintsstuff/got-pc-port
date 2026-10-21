@@ -252,3 +252,103 @@ int32_t GUEST_ABI memory_map_direct(void **address, uint64_t length, int32_t pro
            (unsigned long long)(uint64_t)physical, (unsigned long long)(uintptr_t)*address, (unsigned long long)length);
     return 0;
 }
+
+// ---- flexible memory, protection, batch maps ---------------------------------------------------
+// Flexible memory is a section of its own, mapped twice like direct memory: the guest view and a
+// shadow view the renderer reads. Views need 64 KiB granularity, so lengths round up to it.
+static DWORD page_mode(int32_t prot){
+    int read=prot&1,write=prot&2,execute=prot&4;
+    if(execute)return write?PAGE_EXECUTE_READWRITE:read?PAGE_EXECUTE_READ:PAGE_EXECUTE;
+    return write?PAGE_READWRITE:read?PAGE_READONLY:PAGE_NOACCESS;
+}
+static void *map_view(HANDLE section,uint64_t span,uintptr_t requested,int fixed){
+    void *view=NULL;
+    if(requested&&!(requested&65535))
+        view=MapViewOfFileEx(section,FILE_MAP_ALL_ACCESS|FILE_MAP_EXECUTE,0,0,(SIZE_T)span,(void *)requested);
+    if(view||fixed)return view;
+    for(uintptr_t base=0x20000000;!view&&base+span<=UINT64_C(0xf0000000);base+=0x1000000)
+        view=MapViewOfFileEx(section,FILE_MAP_ALL_ACCESS|FILE_MAP_EXECUTE,0,0,(SIZE_T)span,(void *)base);
+    for(uintptr_t base=UINT64_C(0x200000000);!view&&base+span<UINT64_C(0x10000000000);base+=UINT64_C(0x10000000))
+        view=MapViewOfFileEx(section,FILE_MAP_ALL_ACCESS|FILE_MAP_EXECUTE,0,0,(SIZE_T)span,(void *)base);
+    return view;
+}
+int32_t GUEST_ABI memory_map_flexible(void **address,uint64_t length,int32_t prot,int32_t flags,const char *name){
+    if(!address||!length||length%16384||(prot&~0x37))return ERR_INVALID;
+    uint64_t span=round_up(length,65536);
+    HANDLE section=CreateFileMappingW(INVALID_HANDLE_VALUE,NULL,PAGE_EXECUTE_READWRITE,(DWORD)(span>>32),(DWORD)span,NULL);
+    if(!section)return ERR_NOMEM;
+    unsigned char *shadow=MapViewOfFile(section,FILE_MAP_READ|FILE_MAP_WRITE,0,0,(SIZE_T)span);
+    void *view=shadow?map_view(section,span,(uintptr_t)*address,flags&0x10):NULL;
+    CloseHandle(section);
+    DWORD old;
+    if(!view||!VirtualProtect(view,(SIZE_T)span,page_mode(prot),&old)){
+        if(view)UnmapViewOfFile(view);if(shadow)UnmapViewOfFile(shadow);return ERR_NOMEM;
+    }
+    *address=view;
+    register_mapping((uintptr_t)view,length,shadow,(uint32_t)(prot&3)|((prot&4)?4u:0));
+    printf("Flexible mapping: virtual=0x%llx bytes=%llu name=%s\n",(unsigned long long)(uintptr_t)view,
+           (unsigned long long)length,name?name:"");
+    return 0;
+}
+int32_t GUEST_ABI memory_protect(const void *address,uint64_t length,int32_t prot){
+    if(!length)return ERR_INVALID;
+    uintptr_t start=(uintptr_t)address&~(uintptr_t)4095,end=((uintptr_t)address+length+4095)&~(uintptr_t)4095;
+    DWORD old;return VirtualProtect((void *)start,(SIZE_T)(end-start),page_mode(prot),&old)?0:ERR_INVALID;
+}
+int32_t GUEST_ABI memory_query_protection(void *address,void **start,void **end,uint32_t *prot){
+    MEMORY_BASIC_INFORMATION info;
+    if(!VirtualQuery(address,&info,sizeof(info))||info.State!=MEM_COMMIT)return ERR_INVALID;
+    if(start)*start=info.BaseAddress;
+    if(end)*end=(unsigned char *)info.BaseAddress+info.RegionSize;
+    if(prot){DWORD p=info.Protect&0xff;
+        *prot=(p==PAGE_READONLY?1u:p==PAGE_READWRITE?3u:p==PAGE_EXECUTE_READ?5u:p==PAGE_EXECUTE_READWRITE?7u:p==PAGE_EXECUTE?4u:0u);}
+    return 0;
+}
+// Physical ranges are bookkeeping only (the section stays committed); mappings stay valid.
+int32_t GUEST_ABI memory_release_direct(int64_t start,uint64_t length){
+    if(start<0||!length||(uint64_t)start%16384||length%16384)return ERR_INVALID;
+    uint64_t end=(uint64_t)start+length;int32_t result=ERR_INVALID;
+    AcquireSRWLockExclusive(&memory_lock);
+    for(uint64_t i=0;i<allocation_count;){
+        Allocation *a=&allocations[i];uint64_t a_end=a->start+a->length;
+        if(a_end<=(uint64_t)start||a->start>=end){++i;continue;}
+        result=0;
+        if(a->start<(uint64_t)start&&a_end>end){ // split around the released range
+            if(allocation_count==1024){result=ERR_NOMEM;break;}
+            allocations[allocation_count++]=(Allocation){end,a_end-end};a->length=(uint64_t)start-a->start;++i;
+        }else if(a->start<(uint64_t)start){a->length=(uint64_t)start-a->start;++i;}
+        else if(a_end>end){a->length=a_end-end;a->start=end;++i;}
+        else allocations[i]=allocations[--allocation_count];
+    }
+    ReleaseSRWLockExclusive(&memory_lock);return result;
+}
+// The mapping table is append-only (see memory_clamp), so an unmap keeps the view mapped and
+// logs; a later fixed mapping at that address will fail visibly.
+int32_t GUEST_ABI memory_unmap(void *address,uint64_t length){
+    static volatile LONG reported;
+    if(!length)return ERR_INVALID;
+    if(InterlockedIncrement(&reported)<=16)
+        printf("Unmap not implemented, range kept: virtual=0x%llx bytes=%llu\n",(unsigned long long)(uintptr_t)address,(unsigned long long)length);
+    return 0;
+}
+// SceKernelBatchMapEntry.
+typedef struct {void *start;uint64_t offset,length;char prot,type;int16_t reserved;int32_t operation;} BatchEntry;
+_Static_assert(sizeof(BatchEntry)==32,"SceKernelBatchMapEntry layout");
+int32_t GUEST_ABI memory_batch_map2(void *list,int32_t count,int32_t *done,int32_t flags){
+    BatchEntry *entries=list;int32_t result=0,i=0;
+    for(;i<count;++i){
+        BatchEntry *e=entries?&entries[i]:NULL;
+        if(!e||!e->length||e->operation<0||e->operation>4){result=ERR_INVALID;break;}
+        switch(e->operation){
+        case 0:result=memory_map_direct(&e->start,e->length,(uint8_t)e->prot,flags,(int64_t)e->offset,0);break;
+        case 1:result=memory_unmap(e->start,e->length);break;
+        case 2:result=memory_protect(e->start,e->length,(uint8_t)e->prot);break;
+        case 3:result=memory_map_flexible(&e->start,e->length,(uint8_t)e->prot,flags,"batch");break;
+        default:result=memory_protect(e->start,e->length,(uint8_t)e->prot);break; // type is not modelled
+        }
+        if(result)break;
+    }
+    if(done)*done=i;
+    return result;
+}
+int32_t GUEST_ABI memory_batch_map(void *entries,int32_t count,int32_t *done){return memory_batch_map2(entries,count,done,0x10);}

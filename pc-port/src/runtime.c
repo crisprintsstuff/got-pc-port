@@ -97,6 +97,7 @@ static GuestTls *current_tls(void) {
     return TlsGetValue(tls_slot);
 }
 void runtime_set_thread_handle(void *handle) { current_tls()->tcb[2] = (uintptr_t)handle; }
+uint64_t runtime_bundled_module_count(void) { return module_count ? module_count - 1 : 0; }
 const char *runtime_api_name(const char *identity) {
     for (size_t i = 0; i < sizeof(api_names) / sizeof(*api_names); ++i)
         if (!strcmp(identity, api_names[i].identity)) return api_names[i].api;
@@ -132,9 +133,12 @@ static int GUEST_ABI guest_neo_mode(void){const char *mode=getenv("ISS_NEO_MODE"
 uintptr_t runtime_resolve(const char *identity, int data) {
     if (data) {
         if (!strcmp(identity, "f7uOxY9mM1U#libkernel#1#libkernel#257")) return (uintptr_t)&canary;
-        return libc_resolve_data(identity);
+        uintptr_t object = libc_resolve_data(identity);
+        return object ? object : kernel_resolve_data(identity);
     }
-    if(strstr(identity,"#libSceLibcInternal#1#libSceLibcInternal#257")||strstr(identity,"#libc#1#libc#257")){
+    // Under the libc identity only when the runtime libc stands in: with libc.prx linked, its
+    // exports stay bound (probe.c lets a runtime answer override a binding).
+    if(strstr(identity,"#libSceLibcInternal#1#libSceLibcInternal#257")||(strstr(identity,"#libc#1#libc#257")&&module_count<2)){
         const char *api=runtime_api_name(identity);
         if(!strcmp(api,"memset"))return (uintptr_t)guest_memset;
         if(!strcmp(api,"memcpy"))return (uintptr_t)guest_memcpy;
@@ -155,6 +159,8 @@ uintptr_t runtime_resolve(const char *identity, int data) {
     if (!strcmp(identity, "rTXw65xmLIA#libkernel#1#libkernel#257")) return (uintptr_t)memory_allocate_direct;
     if (!strcmp(identity, "L-Q3LEjIbgA#libkernel#1#libkernel#257")) return (uintptr_t)memory_map_direct;
     uintptr_t fn = libc_resolve(identity);
+    if (!fn) fn = kernel_resolve(identity);
+    if (!fn) fn = rtc_resolve(identity);
     if (!fn) fn = sync_resolve(identity);
     if (!fn) fn = thread_resolve(identity);
     if (!fn) fn = time_resolve(identity);

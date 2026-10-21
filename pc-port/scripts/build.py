@@ -58,7 +58,7 @@ def build(output=None):
            f'/I{ROOT.parent / "research/shadPS4-perf/externals/zydis/include"}',
            f'/I{ROOT.parent / "research/shadPS4-perf/externals/zydis/dependencies/zycore/include"}',
            f'/I{ROOT.parent / "research/shadPS4-perf/externals/sdl3/include"}',
-           *[str(ROOT / 'src' / name) for name in ('probe.c','runtime.c','memory.c','sync.c','kernel_sync.c','threads.c','time.c','files.c','services.c','dialogs.c','save_dialog.c','np.c','network.c','http.c','saves.c','trophies.c','pad.c','pad_panel.c','audio.c','gpu.c','libc.c','libc_format.c','libc_mspace.c','offline.c')],
+           *[str(ROOT / 'src' / name) for name in ('probe.c','runtime.c','memory.c','sync.c','kernel_sync.c','threads.c','time.c','files.c','services.c','dialogs.c','save_dialog.c','np.c','network.c','http.c','saves.c','trophies.c','pad.c','pad_panel.c','audio.c','gpu.c','libc.c','libc_format.c','libc_mspace.c','offline.c','kernel.c','rtc.c')],
            str(out / 'libc_varargs.obj'),
            str(ROOT.parent/'build-sdl/SDL3.lib'),
            *native_objects,

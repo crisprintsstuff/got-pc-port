@@ -379,14 +379,18 @@ static const struct { const char *api; const void *fn; } table[] = {
 static int is_libc(const char *identity) {
     return strstr(identity, "#libc#1#libc#257") || strstr(identity, "#libSceLibcInternal#1#libSceLibcInternal#257");
 }
+// libSceLibcInternal (what Fios2 imports) always comes from here. The libc identity only does
+// when no libc.prx is linked; otherwise the eboot keeps the game's own libc.
 uintptr_t libc_resolve(const char *identity) {
     if (!is_libc(identity)) return 0;
+    if (strstr(identity, "#libc#1#libc#257") && runtime_bundled_module_count()) return 0;
     const char *api = runtime_api_name(identity);
     for (size_t i = 0; i < sizeof(table) / sizeof(*table); ++i)
         if (!strcmp(api, table[i].api)) return (uintptr_t)table[i].fn;
     return 0;
 }
 uintptr_t libc_resolve_data(const char *identity) {
+    if (strstr(identity, "#libc#1#libc#257") && runtime_bundled_module_count()) return 0;
     const char *api = runtime_api_name(identity);
     return is_libc(identity) && (!strcmp(api, "Need_sceLibc") || !strcmp(api, "Need_sceLibcInternal")) ? (uintptr_t)&need_sce_libc : 0;
 }

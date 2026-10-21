@@ -145,6 +145,12 @@ static int32_t GUEST_ABI pg_set_todo(uint32_t h,const ToDo *list,uint32_t count)
     for(uint32_t i=0;i<count;++i){if(list[i].chunk>=LOCAL_CHUNKS)return pg_error(12);
         if(list[i].locus!=0&&list[i].locus!=2&&list[i].locus!=3)return pg_error(16);}return 0;
 }
+// All chunks of the local package, in id order; without a list only the count is reported.
+static int32_t GUEST_ABI pg_chunk_ids(uint32_t h,uint16_t *ids,uint32_t count,uint32_t *entries){
+    if(h!=1||!playgo_opened)return pg_error(9);if(!entries)return pg_error(10);
+    if(!ids){*entries=LOCAL_CHUNKS;return 0;}if(!count)return pg_error(11);
+    uint32_t n=count<LOCAL_CHUNKS?count:LOCAL_CHUNKS;for(uint32_t i=0;i<n;++i)ids[i]=(uint16_t)i;*entries=n;return 0;
+}
 static int32_t GUEST_ABI pg_set_speed(uint32_t h,int speed){
     if(h!=1||!playgo_opened)return pg_error(9);if(speed<0||speed>2)return pg_error(13);
     AcquireSRWLockExclusive(&lock);install_speed=speed;speed_timestamp=GetTickCount64();ReleaseSRWLockExclusive(&lock);return 0;
@@ -196,7 +202,7 @@ uintptr_t service_resolve(const char *identity){
     API("scePlayGoTerminate",pg_terminate);API("scePlayGoGetLocus",pg_locus);API("scePlayGoGetProgress",pg_progress);
     API("scePlayGoGetEta",pg_eta);API("scePlayGoGetToDoList",pg_todo);API("scePlayGoSetToDoList",pg_set_todo);
     API("scePlayGoGetInstallSpeed",pg_speed);API("scePlayGoSetInstallSpeed",pg_set_speed);
-    API("scePlayGoSetLanguageMask",pg_language);
+    API("scePlayGoSetLanguageMask",pg_language);API("scePlayGoGetChunkId",pg_chunk_ids);
 #undef API
     return 0;
 }

@@ -96,9 +96,14 @@ static void destructors(void) {
         if (!called) break;
     }
 }
+// libc's hook for thread_local destructors (_sceKernelSetThreadDtors), run as a thread ends.
+typedef void (GUEST_ABI *ThreadDtors)(void);
+static ThreadDtors thread_dtors;
+static void GUEST_ABI set_thread_dtors(ThreadDtors fn) { thread_dtors = fn; }
+static void thread_ending(void) { if (thread_dtors) thread_dtors(); destructors(); }
 static DWORD WINAPI start(void *arg) {
     Thread *t = arg; current = t; runtime_tls_attach(); runtime_set_thread_handle(t);
-    t->result = t->entry(t->arg); destructors(); runtime_tls_detach(); return 0;
+    t->result = t->entry(t->arg); thread_ending(); runtime_tls_detach(); return 0;
 }
 static int32_t GUEST_ABI create(Thread **out, Attribute **attr, Entry entry, void *arg, const char *name) {
     if (!out || !entry) return error(22);
@@ -126,7 +131,7 @@ static int32_t GUEST_ABI detach(Thread *p) {
     Thread *t = thread(p); if (!t || t->detached || t->joined) return error(22); t->detached = 1; return 0;
 }
 static void GUEST_ABI exit_thread(void *result) {
-    self()->result = result; destructors(); runtime_tls_detach(); ExitThread(0);
+    self()->result = result; thread_ending(); runtime_tls_detach(); ExitThread(0);
 }
 static int GUEST_ABI equal(Thread *a, Thread *b) { return a == b; }
 static int GUEST_ABI yield(void) { SwitchToThread(); return 0; }
@@ -152,6 +157,31 @@ static int32_t GUEST_ABI set_specific(uint32_t key, void *value) {
     ReleaseSRWLockShared(&registry); return result ? 0 : error(22);
 }
 static int32_t GUEST_ABI sched_yield_host(void){SwitchToThread();return 0;}
+// Affinity and priority are recorded for the guest to read back; host threads keep the Windows
+// scheduler's placement, which suits a PC better than the PS4's seven fixed cores.
+static int32_t GUEST_ABI get_affinity(Thread *p, uint64_t *mask) { Thread *t = thread(p); if (!t || !mask) return error(22); *mask = t->attr.affinity; return 0; }
+static int32_t GUEST_ABI set_affinity(Thread *p, uint64_t mask) { Thread *t = thread(p); if (!t || !mask) return error(22); t->attr.affinity = mask; return 0; }
+static int32_t GUEST_ABI get_priority(Thread *p, int *priority) { Thread *t = thread(p); if (!t || !priority) return error(22); *priority = t->attr.priority; return 0; }
+static int32_t GUEST_ABI set_priority(Thread *p, int priority) { Thread *t = thread(p); if (!t || priority < 256 || priority > 959) return error(22); t->attr.priority = priority; return 0; }
+static int32_t GUEST_ABI get_name(Thread *p, char *name) { Thread *t = thread(p); if (!t || !name) return error(22); snprintf(name, 32, "%s", t->name); return 0; }
+static int32_t GUEST_ABI attr_get_detach(Attribute **p, int *n) { Attribute *a = attribute(p); if (!a || !n) return error(22); *n = a->detached; return 0; }
+// pthread_once_t starts with its state: 0 never run, 1 done; 2 marks a run in progress here.
+static SRWLOCK once_lock = SRWLOCK_INIT;
+static CONDITION_VARIABLE once_done = CONDITION_VARIABLE_INIT;
+static int32_t GUEST_ABI once(volatile int32_t *state, void (GUEST_ABI *init)(void)) {
+    if (!state || !init) return error(22);
+    if (__atomic_load_n(state, __ATOMIC_ACQUIRE) == 1) return 0;
+    AcquireSRWLockExclusive(&once_lock);
+    while (*state == 2) SleepConditionVariableSRW(&once_done, &once_lock, INFINITE, 0);
+    int run = *state != 1;
+    if (run) *state = 2;
+    ReleaseSRWLockExclusive(&once_lock);
+    if (!run) return 0;
+    init();
+    AcquireSRWLockExclusive(&once_lock); __atomic_store_n(state, 1, __ATOMIC_RELEASE); ReleaseSRWLockExclusive(&once_lock);
+    WakeAllConditionVariable(&once_done);
+    return 0;
+}
 uintptr_t thread_resolve(const char *identity) {
     if (!strstr(identity,"#libkernel#1#libkernel#257")) return 0;
     const char *api = runtime_api_name(identity);
@@ -166,6 +196,10 @@ uintptr_t thread_resolve(const char *identity) {
     API("scePthreadDetach",detach); API("scePthreadExit",exit_thread); API("scePthreadEqual",equal);
     API("scePthreadYield",yield); API("scePthreadKeyCreate",key_create); API("scePthreadKeyDelete",key_delete);
     API("scePthreadGetspecific",get_specific); API("scePthreadSetspecific",set_specific);
+    API("scePthreadGetaffinity",get_affinity); API("scePthreadSetaffinity",set_affinity);
+    API("scePthreadGetprio",get_priority); API("scePthreadSetprio",set_priority);
+    API("scePthreadGetname",get_name); API("scePthreadAttrGetdetachstate",attr_get_detach);
+    API("scePthreadOnce",once); API("_sceKernelSetThreadDtors",set_thread_dtors);
 #undef API
     return 0;
 }
