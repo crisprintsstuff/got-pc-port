@@ -4,6 +4,7 @@
 #include <map>
 #include <mutex>
 #include <vector>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <intrin.h>
@@ -131,6 +132,51 @@ static inline u32* ClearContextState(u32* cmdbuf) {
     return cmdbuf + ClearStateSequence.size();
 }
 
+// ISS_IRQ_LOG=1 (got-pc-port): logs eq event registrations, interrupts delivered to a guest
+// equeue, and command buffer submissions with the fence packets they carry; the first 40 of each
+// kind, then every 500th.
+namespace {
+const bool irq_log = [] {
+    const char* p = std::getenv("ISS_IRQ_LOG");
+    return p && p[0] == '1';
+}();
+std::atomic<u32> irq_count{0}, submit_count{0}, dingdong_count{0};
+bool LogNth(u32 n) {
+    return n <= 40 || n % 500 == 0;
+}
+// Counts EVENT_WRITE_EOP (0x47), EVENT_WRITE_EOS (0x48) and RELEASE_MEM (0x49) packets.
+void ScanFences(const u32* words, u32 bytes, u32& eop, u32& eos, u32& release) {
+    const u32 count = bytes / 4;
+    for (u32 i = 0; words && i < count && i < (1u << 22);) {
+        const u32 header = words[i], type = header >> 30;
+        if (type == 3) {
+            const u32 op = (header >> 8) & 0xff, length = ((header >> 16) & 0x3fff) + 2;
+            eop += op == 0x47; eos += op == 0x48; release += op == 0x49;
+            i += length;
+        } else if (type == 0) {
+            i += ((header >> 16) & 0x3fff) + 2;
+        } else {
+            ++i;
+        }
+    }
+}
+void LogSubmit(const char* kind, u32 count, const u32* const* dcbs, const u32* sizes) {
+    if (!irq_log) {
+        return;
+    }
+    const u32 n = ++submit_count;
+    if (!LogNth(n)) {
+        return;
+    }
+    u32 eop = 0, eos = 0, release = 0;
+    for (u32 i = 0; i < count && dcbs && sizes; ++i) {
+        ScanFences(dcbs[i], sizes[i], eop, eos, release);
+    }
+    std::fprintf(stderr, "GNM_SUBMIT n=%u %s buffers=%u eop=%u eos=%u release_mem=%u irqs_so_far=%u\n", n, kind,
+                 count, eop, eos, release, irq_count.load());
+}
+} // namespace
+
 static inline bool IsValidEventType(Platform::InterruptId id) {
     return (static_cast<u32>(id) >= static_cast<u32>(Platform::InterruptId::Compute0RelMem) &&
             static_cast<u32>(id) <= static_cast<u32>(Platform::InterruptId::Compute6RelMem)) ||
@@ -154,11 +200,22 @@ s32 PS4_SYSV_ABI sceGnmAddEqEvent(OrbisKernelEqueue eq, u64 id, void* udata) {
     kernel_event.event.udata = udata;
 
     equeue->AddEvent(kernel_event);
+    if (irq_log) {
+        std::fprintf(stderr, "GNM_ADD_EQ_EVENT eq=%p id=0x%llx\n", static_cast<void*>(equeue),
+                     static_cast<unsigned long long>(id));
+    }
 
     Platform::IrqC::Instance()->Register(
         static_cast<Platform::InterruptId>(id),
         [=](Platform::InterruptId irq) {
             ASSERT_MSG(irq == static_cast<Platform::InterruptId>(id), "An unexpected IRQ occured");
+            if (irq_log) {
+                const u32 n = ++irq_count;
+                if (LogNth(n)) {
+                    std::fprintf(stderr, "GNM_IRQ n=%u eq=%p id=0x%llx\n", n, static_cast<void*>(equeue),
+                                 static_cast<unsigned long long>(id));
+                }
+            }
 
             // We need to convert IRQ# to event id
             if (!IsValidEventType(irq))
@@ -304,6 +361,13 @@ int PS4_SYSV_ABI sceGnmDestroyWorkloadStream() {
 }
 
 void PS4_SYSV_ABI sceGnmDingDong(u32 gnm_vqid, u32 next_offs_dw) {
+    if (irq_log) {
+        const u32 n = ++dingdong_count;
+        if (LogNth(n)) {
+            std::fprintf(stderr, "GNM_DINGDONG n=%u vqid=%u offset_dw=%u irqs_so_far=%u\n", n, gnm_vqid, next_offs_dw,
+                         irq_count.load());
+        }
+    }
     HLE_TRACE;
     LOG_DEBUG(Lib_GnmDriver, "vqid {}, offset_dw {}", gnm_vqid, next_offs_dw);
 
@@ -2442,6 +2506,7 @@ s32 PS4_SYSV_ABI sceGnmSubmitAndFlipCommandBuffers(u32 count, u32* dcb_gpu_addrs
                                                    u32* dcb_sizes_in_bytes, u32* ccb_gpu_addrs[],
                                                    u32* ccb_sizes_in_bytes, u32 vo_handle,
                                                    u32 buf_idx, u32 flip_mode, s64 flip_arg) {
+    LogSubmit("flip", count, const_cast<const u32* const*>(dcb_gpu_addrs), dcb_sizes_in_bytes);
     return sceGnmSubmitAndFlipCommandBuffersForWorkload(
         count, count, dcb_gpu_addrs, dcb_sizes_in_bytes, ccb_gpu_addrs, ccb_sizes_in_bytes,
         vo_handle, buf_idx, flip_mode, flip_arg);
@@ -2540,6 +2605,7 @@ s32 PS4_SYSV_ABI sceGnmSubmitCommandBuffersForWorkload(u32 workload, u32 count,
 s32 PS4_SYSV_ABI sceGnmSubmitCommandBuffers(u32 count, const u32* dcb_gpu_addrs[],
                                             u32* dcb_sizes_in_bytes, const u32* ccb_gpu_addrs[],
                                             u32* ccb_sizes_in_bytes) {
+    LogSubmit("submit", count, dcb_gpu_addrs, dcb_sizes_in_bytes);
     return sceGnmSubmitCommandBuffersForWorkload(count, count, dcb_gpu_addrs, dcb_sizes_in_bytes,
                                                  ccb_gpu_addrs, ccb_sizes_in_bytes);
 }
