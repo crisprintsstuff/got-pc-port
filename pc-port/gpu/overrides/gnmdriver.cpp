@@ -5,6 +5,10 @@
 #include <mutex>
 #include <vector>
 #include <atomic>
+#include <thread>
+#include <deque>
+#include <condition_variable>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <intrin.h>
@@ -183,6 +187,68 @@ void LogSubmit(const char* kind, u32 count, const u32* const* dcbs, const u32* s
 }
 } // namespace
 
+// ISS_ASC_IRQ_DELAY_US (got-pc-port, default 1000; 0 = immediate): compute queue interrupts reach
+// the guest's equeue this long after the fence. On the PS4 a DingDong only rings a doorbell and the
+// GPU runs the work later; here the command processor finishes it at once, and Ghost of Tsushima's
+// ProxySetSync then signalled a countdown sync point before the main thread had armed it (the
+// counter went below zero and the frame job was never released). Delivery order is kept.
+namespace {
+struct DelayedIrq {
+    std::chrono::steady_clock::time_point due;
+    EqueueInternal* equeue;
+    u64 id;
+};
+class IrqDelayer {
+public:
+    static IrqDelayer& Instance() {
+        static IrqDelayer instance;
+        return instance;
+    }
+    std::chrono::microseconds Delay() const {
+        return delay;
+    }
+    void Push(EqueueInternal* equeue, u64 id) {
+        {
+            std::scoped_lock lock{mutex};
+            pending.push_back({std::chrono::steady_clock::now() + delay, equeue, id});
+        }
+        wake.notify_one();
+    }
+
+private:
+    IrqDelayer() {
+        const char* p = std::getenv("ISS_ASC_IRQ_DELAY_US");
+        delay = std::chrono::microseconds(p ? std::strtoull(p, nullptr, 10) : 1000ull);
+        if (delay.count() > 0) {
+            worker = std::thread([this] { Run(); });
+            worker.detach();
+        }
+    }
+    void Run() {
+        std::unique_lock lock{mutex};
+        for (;;) {
+            wake.wait(lock, [this] { return !pending.empty(); });
+            const auto due = pending.front().due;
+            if (std::chrono::steady_clock::now() < due) {
+                wake.wait_until(lock, due);
+                continue;
+            }
+            const DelayedIrq next = pending.front();
+            pending.pop_front();
+            lock.unlock();
+            next.equeue->TriggerEvent(next.id, OrbisKernelEvent::Filter::GraphicsCore,
+                                      reinterpret_cast<void*>(next.id));
+            lock.lock();
+        }
+    }
+    std::chrono::microseconds delay{};
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::deque<DelayedIrq> pending;
+    std::thread worker;
+};
+} // namespace
+
 static inline bool IsValidEventType(Platform::InterruptId id) {
     return (static_cast<u32>(id) >= static_cast<u32>(Platform::InterruptId::Compute0RelMem) &&
             static_cast<u32>(id) <= static_cast<u32>(Platform::InterruptId::Compute6RelMem)) ||
@@ -228,6 +294,11 @@ s32 PS4_SYSV_ABI sceGnmAddEqEvent(OrbisKernelEqueue eq, u64 id, void* udata) {
                 return;
 
             // Event data is expected to be an event type as per sceGnmGetEqEventType.
+            if (id <= static_cast<u64>(Platform::InterruptId::Compute6RelMem) &&
+                IrqDelayer::Instance().Delay().count() > 0) {
+                IrqDelayer::Instance().Push(equeue, id);
+                return;
+            }
             equeue->TriggerEvent(static_cast<GnmEventType>(id),
                                  OrbisKernelEvent::Filter::GraphicsCore,
                                  reinterpret_cast<void*>(id));
