@@ -130,6 +130,26 @@ static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
             frame = link[0];
         }
         printf("],");
+        // Outside the image: name the host module, and scan the stack for return addresses into
+        // the image (host code keeps no rbp chain), newest first.
+        if (address < (uintptr_t)image || address - (uintptr_t)image >= image_size) {
+            HMODULE host = NULL; char path[MAX_PATH] = "";
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   (LPCSTR)(uintptr_t)address, &host) && host) {
+                GetModuleFileNameA(host, path, sizeof(path));
+                const char *name = strrchr(path, '\\');
+                printf("\"host_module\":\"%s\",\"host_offset\":\"0x%llx\",", name ? name + 1 : path,
+                       (unsigned long long)(address - (uintptr_t)host));
+            }
+            uint64_t words[512]; SIZE_T got = 0;
+            ReadProcessMemory(GetCurrentProcess(), (void *)c->Rsp, words, sizeof(words), &got);
+            printf("\"stack_scan\":[");
+            int found = 0;
+            for (size_t i = 0; i < got / 8 && found < 12; ++i)
+                if (words[i] >= (uintptr_t)image && words[i] - (uintptr_t)image < image_size)
+                    printf("%s\"0x%llx\"", found++ ? "," : "", (unsigned long long)(words[i] - (uintptr_t)image));
+            printf("],");
+        }
     }
     printf("\"rdi\":\"0x%llx\",\"rsi\":\"0x%llx\"}\n",
            (unsigned long long)exception->ContextRecord->Rdi, (unsigned long long)exception->ContextRecord->Rsi);
