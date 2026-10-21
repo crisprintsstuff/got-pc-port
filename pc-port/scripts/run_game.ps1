@@ -6,6 +6,8 @@ $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $out = Join-Path $root "pc-port\out"
 $env:ISS_GAME_DIR = (Get-Content (Join-Path $out "game_dir.txt") -TotalCount 1).Trim()
 $env:ISS_GPU = "1"
+# TLS reads patched at their first fault instead of faulting every time (upstream default).
+$env:ISS_TLS_PATCH = "1"
 $env:ISS_HANG_REPORT = if ($HangReport -gt 0) { "$HangReport" } else { "" }
 $env:ISS_HANG_DUMP = $Dump
 $env:ISS_HANG_DUMP_REG = $DumpReg
