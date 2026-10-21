@@ -182,8 +182,9 @@ static int32_t GUEST_ABI once(volatile int32_t *state, void (GUEST_ABI *init)(vo
     WakeAllConditionVariable(&once_done);
     return 0;
 }
-// Ctrl+C hang report: suspends each guest thread and describes where it is.
-void runtime_report_threads(void) {
+// Hang report: suspends each guest thread, describes where it is, then resumes it unless the
+// process is about to exit.
+void runtime_report_threads(FILE *out, int resume) {
     AcquireSRWLockShared(&registry);
     for (Thread *t = threads; t; t = t->next) {
         if (t->id == GetCurrentThreadId()) continue;
@@ -192,12 +193,13 @@ void runtime_report_threads(void) {
         DWORD code = 0;
         if (GetExitCodeThread(h, &code) && code == STILL_ACTIVE && SuspendThread(h) != (DWORD)-1) {
             CONTEXT c; memset(&c, 0, sizeof(c)); c.ContextFlags = CONTEXT_FULL;
-            if (GetThreadContext(h, &c)) runtime_report_thread(t->name, t->id, &c);
+            if (GetThreadContext(h, &c)) runtime_report_thread(out, t->name, t->id, &c);
+            if (resume) ResumeThread(h);
         }
         CloseHandle(h);
     }
     ReleaseSRWLockShared(&registry);
-    fflush(stderr);
+    fflush(out);
 }
 uintptr_t thread_resolve(const char *identity) {
     if (!strstr(identity,"#libkernel#1#libkernel#257")) return 0;

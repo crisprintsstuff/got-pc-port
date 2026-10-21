@@ -160,17 +160,35 @@ static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-// Ctrl+C or Ctrl+Break: describe every guest thread, then exit, so a hang shows who waits where.
+// The hang report goes to hang-report.txt next to the executable (appended), not the console:
+// PowerShell drops a redirected program's output when Ctrl+C ends the pipeline.
+static void hang_report(const char *why, int resume) {
+    char path[MAX_PATH]; GetModuleFileNameA(NULL, path, sizeof(path));
+    char *slash = strrchr(path, '\\'); if (slash) strcpy(slash + 1, "hang-report.txt");
+    FILE *out = fopen(path, "a");
+    if (!out) out = stderr;
+    fprintf(out, "HANG_REPORT begin (%s) tick_ms=%llu\n", why, (unsigned long long)GetTickCount64());
+    runtime_report_threads(out, resume);
+    fprintf(out, "HANG_REPORT end\n");
+    if (out != stderr) fclose(out);
+}
+// Ctrl+C or Ctrl+Break: report every guest thread, then exit, so a hang shows who waits where.
 static BOOL WINAPI console_break(DWORD event) {
     if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT) return FALSE;
-    fputs("HANG_REPORT begin\n", stderr);
-    runtime_report_threads();
-    fputs("HANG_REPORT end\n", stderr);
+    hang_report("ctrl+c", 0);
     fflush(NULL);
     ExitProcess(130);
 }
+// ISS_HANG_REPORT=<seconds>: one report after that long, and the game keeps running.
+static DWORD WINAPI hang_timer(void *seconds) {
+    Sleep((DWORD)(uintptr_t)seconds * 1000);
+    hang_report("timer", 1);
+    return 0;
+}
 int main(int argc, char **argv) {
     SetConsoleCtrlHandler(console_break, TRUE);
+    {   const char *after = getenv("ISS_HANG_REPORT"); int seconds = after ? atoi(after) : 0;
+        if (seconds > 0) { HANDLE timer = CreateThread(NULL, 0, hang_timer, (void *)(uintptr_t)seconds, 0, NULL); if (timer) CloseHandle(timer); } }
     setvbuf(stdout,NULL,_IONBF,0);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     if (argc != 3 || (strcmp(argv[2], "--map-only") && strcmp(argv[2], "--entry"))) {

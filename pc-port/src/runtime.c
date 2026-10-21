@@ -222,34 +222,34 @@ static void *GUEST_ABI trace_reallocalign(void *m, void *p, uint64_t align, uint
 }
 // One line per thread for the Ctrl+C hang report: where it is (image offset, or host module and
 // offset), the rbp chain through guest frames, and image return addresses found on its stack.
-void runtime_report_thread(const char *name, DWORD tid, const CONTEXT *c) {
+void runtime_report_thread(FILE *out, const char *name, DWORD tid, const CONTEXT *c) {
     uint64_t rip = c->Rip;
-    fprintf(stderr, "THREAD %s tid=%lu rip=", name, tid);
-    if (rip >= (uintptr_t)source_image && rip - (uintptr_t)source_image < source_size) fprintf(stderr, "+0x%llx", (unsigned long long)(rip - (uintptr_t)source_image));
+    fprintf(out, "THREAD %s tid=%lu rip=", name, tid);
+    if (rip >= (uintptr_t)source_image && rip - (uintptr_t)source_image < source_size) fprintf(out, "+0x%llx", (unsigned long long)(rip - (uintptr_t)source_image));
     else {
         HMODULE host = NULL; char path[MAX_PATH] = "?";
         if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)(uintptr_t)rip, &host) && host)
             GetModuleFileNameA(host, path, sizeof(path));
         const char *base = strrchr(path, '\\');
-        fprintf(stderr, "%s+0x%llx", base ? base + 1 : path, (unsigned long long)(host ? rip - (uintptr_t)host : rip));
+        fprintf(out, "%s+0x%llx", base ? base + 1 : path, (unsigned long long)(host ? rip - (uintptr_t)host : rip));
     }
-    fprintf(stderr, " chain:");
+    fprintf(out, " chain:");
     uint64_t frame = c->Rbp, link[2]; SIZE_T copied;
     for (int depth = 0; depth < 16 && frame && !(frame & 7); ++depth) {
         if (!ReadProcessMemory(GetCurrentProcess(), (void *)frame, link, sizeof(link), &copied) || copied != sizeof(link)) break;
         if (link[1] < (uintptr_t)source_image || link[1] - (uintptr_t)source_image >= source_size) break;
-        fprintf(stderr, " +0x%llx", (unsigned long long)(link[1] - (uintptr_t)source_image));
+        fprintf(out, " +0x%llx", (unsigned long long)(link[1] - (uintptr_t)source_image));
         if (link[0] <= frame) break;
         frame = link[0];
     }
     uint64_t words[512] = {0}; SIZE_T got = 0; int found = 0;
     ReadProcessMemory(GetCurrentProcess(), (void *)c->Rsp, words, sizeof(words), &got);
-    fprintf(stderr, " scan:");
+    fprintf(out, " scan:");
     for (size_t i = 0; i < got / 8 && found < 10; ++i)
         if (words[i] >= (uintptr_t)source_image && words[i] - (uintptr_t)source_image < source_size) {
-            fprintf(stderr, " +0x%llx", (unsigned long long)(words[i] - (uintptr_t)source_image)); ++found;
+            fprintf(out, " +0x%llx", (unsigned long long)(words[i] - (uintptr_t)source_image)); ++found;
         }
-    fputc('\n', stderr);
+    fputc('\n', out);
 }
 
 uintptr_t runtime_wrap_binding(const char *identity, uintptr_t native) {
