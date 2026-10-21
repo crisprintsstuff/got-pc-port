@@ -141,8 +141,14 @@ const bool irq_log = [] {
     return p && p[0] == '1';
 }();
 std::atomic<u32> irq_count{0}, submit_count{0}, dingdong_count{0};
+std::atomic<u32> irq_by_id[0x41]{}, dingdong_by_vqid[64]{};
 bool LogNth(u32 n) {
     return n <= 40 || n % 500 == 0;
+}
+// Per queue or interrupt id: the first 10, then every 500th.
+bool LogNthOf(std::atomic<u32>* counters, u32 slots, u32 key) {
+    const u32 n = ++counters[key < slots ? key : slots - 1];
+    return n <= 10 || n % 500 == 0;
 }
 // Counts EVENT_WRITE_EOP (0x47), EVENT_WRITE_EOS (0x48) and RELEASE_MEM (0x49) packets.
 void ScanFences(const u32* words, u32 bytes, u32& eop, u32& eos, u32& release) {
@@ -211,7 +217,7 @@ s32 PS4_SYSV_ABI sceGnmAddEqEvent(OrbisKernelEqueue eq, u64 id, void* udata) {
             ASSERT_MSG(irq == static_cast<Platform::InterruptId>(id), "An unexpected IRQ occured");
             if (irq_log) {
                 const u32 n = ++irq_count;
-                if (LogNth(n)) {
+                if (LogNthOf(irq_by_id, 0x41, static_cast<u32>(id))) {
                     std::fprintf(stderr, "GNM_IRQ n=%u eq=%p id=0x%llx\n", n, static_cast<void*>(equeue),
                                  static_cast<unsigned long long>(id));
                 }
@@ -363,7 +369,7 @@ int PS4_SYSV_ABI sceGnmDestroyWorkloadStream() {
 void PS4_SYSV_ABI sceGnmDingDong(u32 gnm_vqid, u32 next_offs_dw) {
     if (irq_log) {
         const u32 n = ++dingdong_count;
-        if (LogNth(n)) {
+        if (LogNthOf(dingdong_by_vqid, 64, gnm_vqid)) {
             std::fprintf(stderr, "GNM_DINGDONG n=%u vqid=%u offset_dw=%u irqs_so_far=%u\n", n, gnm_vqid, next_offs_dw,
                          irq_count.load());
         }

@@ -3991,11 +3991,11 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
         case PM4ItOpcode::ReleaseMem: {
             {   // ISS_IRQ_LOG=1 (got-pc-port): which compute fences arrive and how they are handled.
                 static const bool irq_log = [] { const char* p = std::getenv("ISS_IRQ_LOG"); return p && p[0] == '1'; }();
-                static std::atomic<u32> logged{0};
+                static std::atomic<u32> logged{0}, per_vqid[64]{};
                 if (irq_log) {
                     const auto* r = reinterpret_cast<const PM4CmdReleaseMem*>(header);
-                    const u32 n = ++logged;
-                    if (n <= 60 || n % 500 == 0)
+                    const u32 n = ++logged, k = ++per_vqid[vqid < 64 ? vqid : 63];
+                    if (k <= 10 || k % 500 == 0)
                         std::fprintf(stderr, "ASC_RELEASE_MEM n=%u vqid=%u pipe=%u int_sel=%u data_sel=%u deferred=%d split=%d\n", n,
                                      vqid, queue.pipe_id, u32(r->int_sel.Value()), u32(r->data_sel.Value()),
                                      int(pipe_deferred), int(CpSplitActive()));
