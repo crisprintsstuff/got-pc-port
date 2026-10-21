@@ -5,6 +5,7 @@
 // keyboard and mouse); a plain Windows dialog remains for a DLL without it. While it is up the
 // game's pad reads idle (save_dialog_blocking, src/pad.c), as on the console.
 #include "runtime.h"
+#include "game.h"
 #include "../gpu/iss_dialog.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,10 +33,10 @@ static int valid_name(const char *p){return p&&memchr(p,0,32)&&*p&&!strchr(p,'/'
 int save_dialog_blocking(void){return InterlockedCompareExchange(&sd_status,0,0)==2;}
 static void add_row(Job *j,int user,const SdDir *dir){
     if(j->count>=128||!valid_name(dir->name))return;
-    char path[1400];snprintf(path,sizeof(path),"%s\\%d\\CUSA00004\\%s",runtime_save_root(),user,dir->name);
+    char path[1400];snprintf(path,sizeof(path),"%s\\%d\\" GAME_TITLE_ID "\\%s",runtime_save_root(),user,dir->name);
     DWORD a=GetFileAttributesA(path);if(a==INVALID_FILE_ATTRIBUTES||!(a&FILE_ATTRIBUTE_DIRECTORY))return;
     Row *row=&j->rows[j->count];row->dir=*dir;
-    snprintf(path,sizeof(path),"%s\\%d\\CUSA00004\\%s.sce_sys\\param.bin",runtime_save_root(),user,dir->name);
+    snprintf(path,sizeof(path),"%s\\%d\\" GAME_TITLE_ID "\\%s.sce_sys\\param.bin",runtime_save_root(),user,dir->name);
     FILE *f=fopen(path,"rb");if(f){fread(&row->meta,1,sizeof(row->meta),f);fclose(f);}
     snprintf(row->label,sizeof(row->label),"%s - %.127s",dir->name,row->meta.subtitle[0]?row->meta.subtitle:row->meta.title);++j->count;
 }
@@ -61,7 +62,7 @@ static int open_ui(Job *j){
         snprintf(it->subtitle,sizeof(it->subtitle),"%s",r->meta.subtitle);
         snprintf(it->detail,sizeof(it->detail),"%.255s",r->meta.detail);
         it->mtime=r->meta.mtime;
-        snprintf(it->icon_path,sizeof(it->icon_path),"%s\\%d\\CUSA00004\\%s.sce_sys\\icon0.png",runtime_save_root(),j->user,r->dir.name);
+        snprintf(it->icon_path,sizeof(it->icon_path),"%s\\%d\\" GAME_TITLE_ID "\\%s.sce_sys\\icon0.png",runtime_save_root(),j->user,r->dir.name);
     }
     const int ok=gpu_dialog_open(d)==0;free(d);return ok?0:-1;
 }

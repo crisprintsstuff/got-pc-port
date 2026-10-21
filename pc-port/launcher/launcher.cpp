@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// inFAMOUS Second Son PC port launcher (2026-10-18). A portable folder:
-//   <root>\inFAMOUS Second Son Launcher.exe   this program
+// Ghost of Tsushima PC port launcher (2026-10-18). A portable folder:
+//   <root>\Ghost of Tsushima Launcher.exe   this program
 //   <root>\bin\                                 iss-probe.exe, iss-gpu.dll, SDL3.dll
 //   <root>\shaders\                             optional: library-v2\ (pipeline library), seed\
 //   <root>\user\                                launcher.ini, prepared\, saves\, shader-cache\, logs\
-// The game itself is never shipped: on first launch the user picks their own inFAMOUS Second Son
-// (CUSA00004) folder. The window art comes from that folder too: sce_sys\pic1.png (the crow, as on
+// The game itself is never shipped: on first launch the user picks their own Ghost of Tsushima
+// (CUSA11456) folder. The window art comes from that folder too: sce_sys\pic1.png (the crow, as on
 // the loading screen) behind the menu, darkened on the left. The logo is <root>\assets\logo.png
 // when present, else it is cut out of sce_sys\icon0.png (its black background made transparent).
 // PLAY starts bin\iss-probe.exe with the environment of the tested build (play_porte.py, porte-x)
@@ -84,7 +84,7 @@ std::vector<Setting> g_settings = {
      {{L"Wait", "0"}, {L"Skip", "1"}}, TabGraphics},
     {"blackbox", L"GPU crash diagnostics", L"Writes a report if the GPU hangs.",
      {{L"On", "1"}, {L"Off", "0"}}, TabAdvanced},
-    // The languages of the CUSA00004 package (the PS4 system language ids, src/services.c
+    // The languages of the CUSA11456 package (the PS4 system language ids, src/services.c
     // ISS_LANGUAGE): ten with voices, the four Nordic ones subtitles only (English voices).
     {"language", L"Language", L"Text and voices. Nordic languages: subtitles only.",
      {{L"English", "1"}, {L"French", "2"}, {L"Italian", "5"}, {L"German", "4"}, {L"Spanish", "3"},
@@ -219,17 +219,15 @@ bool FileContains(const fs::path& path, const char* needle) {
     return data.find(needle) != std::string::npos;
 }
 
-// Empty when the folder is an inFAMOUS Second Son (CUSA00004) game folder, else the reason.
+// Empty when the folder is a Ghost of Tsushima (CUSA11456) game folder, else the reason.
 std::wstring CheckGameDir(const fs::path& dir) {
     std::error_code ec;
     if (dir.empty() || !fs::is_directory(dir, ec)) return L"Folder not found.";
     if (!fs::is_regular_file(dir / "eboot.bin", ec)) return L"eboot.bin is missing in this folder.";
     if (!fs::is_regular_file(dir / "sce_sys" / "param.sfo", ec))
         return L"sce_sys\\param.sfo is missing in this folder.";
-    if (!FileContains(dir / "sce_sys" / "param.sfo", "CUSA00004"))
-        return L"This is not inFAMOUS Second Son (CUSA00004).";
-    if (!fs::is_regular_file(dir / "sce_module" / "libc.prx", ec))
-        return L"sce_module\\libc.prx is missing in this folder.";
+    if (!FileContains(dir / "sce_sys" / "param.sfo", "CUSA11456"))
+        return L"This is not Ghost of Tsushima (CUSA11456).";
     return {};
 }
 
@@ -242,7 +240,7 @@ std::wstring PickFolder(HWND owner) {
     DWORD options = 0;
     dialog->GetOptions(&options);
     dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-    dialog->SetTitle(L"Select your inFAMOUS Second Son (CUSA00004) game folder");
+    dialog->SetTitle(L"Select your Ghost of Tsushima (CUSA11456) game folder");
     if (SUCCEEDED(dialog->Show(owner))) {
         IShellItem* item = nullptr;
         if (SUCCEEDED(dialog->GetResult(&item))) {
@@ -425,12 +423,12 @@ fs::path PrepareCache(bool library, const std::function<void(float)>& progress =
     // An older launcher's full copy of the cache before its last update (now: rollback\).
     if (fs::exists(lineage / "previous", ec)) fs::rename(lineage / "previous", lineage / ("old-previous-" + tag), ec);
     const fs::path seed = PathOption("shader_seed", g_root / "shaders" / "seed");
-    if (!fs::is_regular_file(current / "CUSA00004" / "profile.bin", ec)) {
+    if (!fs::is_regular_file(current / "CUSA11456" / "profile.bin", ec)) {
         fs::remove_all(current, ec);
-        fs::create_directories(current / "CUSA00004", ec);
-        if (fs::is_regular_file(seed / "CUSA00004" / "profile.bin", ec)) {
+        fs::create_directories(current / "CUSA11456", ec);
+        if (fs::is_regular_file(seed / "CUSA11456" / "profile.bin", ec)) {
             if (library)
-                fs::copy_file(seed / "CUSA00004" / "profile.bin", current / "CUSA00004" / "profile.bin",
+                fs::copy_file(seed / "CUSA11456" / "profile.bin", current / "CUSA11456" / "profile.bin",
                               fs::copy_options::overwrite_existing, ec);
             else
                 fs::copy(seed, current, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
@@ -534,7 +532,7 @@ bool PreparedReady() {
 }
 
 // DLC: the user's .pkg files of the game (entitlement-only packages). Their content id is at 0x40
-// of the package header ("\x7fCNT"): EP9000-CUSA00004_00-<16 character label>.
+// of the package header ("\x7fCNT"): UP9000-CUSA11456_00-<16 character label>.
 std::vector<std::string> ScanDlcLabels(const fs::path& dir) {
     std::vector<std::string> labels;
     std::error_code ec;
@@ -550,7 +548,7 @@ std::vector<std::string> ScanDlcLabels(const fs::path& dir) {
         f.read(header, sizeof(header));
         if (memcmp(header, "\x7f" "CNT", 4) != 0) continue;
         const std::string id(header + 0x40, 36);
-        if (id.find("CUSA00004") == std::string::npos) continue;
+        if (id.find("CUSA11456") == std::string::npos) continue;
         const std::string label = id.substr(20, 16);
         if (std::find(labels.begin(), labels.end(), label) == labels.end()) labels.push_back(label);
     }
@@ -1202,7 +1200,7 @@ void Paint(HDC hdc, int width, int height) {
         } else {
             // No game folder yet: the title in type until the game's own logo can be shown.
             Font small_title(oswald, S(22), FontStyleRegular, UnitPixel);
-            SpacedText(g, L"inFAMOUS", small_title, text_brush, left + S(2), y, S(3));
+            SpacedText(g, L"GHOST OF", small_title, text_brush, left + S(2), y, S(3));
             Font big(oswald, S(52), FontStyleBold, UnitPixel);
             g.DrawString(L"SECOND SON", -1, &big, PointF(left - S(2), y + S(22)), &yellow);
             y += S(104);
@@ -1522,7 +1520,7 @@ void Paint(HDC hdc, int width, int height) {
         SolidBrush bar_brush(kBar);
         frame.FillRectangle(&bar_brush, RectF(0, 0, float(width), bar));
         Font title_font(oswald, S(13), FontStyleRegular, UnitPixel);
-        SpacedText(frame, L"inFAMOUS SECOND SON", title_font, dim_brush, S(14), S(7), S(1.5f));
+        SpacedText(frame, L"GHOST OF TSUSHIMA", title_font, dim_brush, S(14), S(7), S(1.5f));
         const float bw = S(40);
         RectF close(width - bw, 0, bw, bar), minimize(width - 2 * bw, 0, bw, bar);
         const float tc = lit(HotClose), tm = lit(HotMinimize);
@@ -1599,7 +1597,7 @@ void ChooseDlcFolder() {
     if (dir.empty()) return;
     const auto labels = ScanDlcLabels(dir);
     if (labels.empty()) {
-        SetStatus(L"No inFAMOUS Second Son DLC (.pkg) found in that folder.");
+        SetStatus(L"No Ghost of Tsushima DLC (.pkg) found in that folder.");
         return;
     }
     g_extra["dlc_dir"] = Narrow(dir);
@@ -2043,7 +2041,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_CLOSE:
         if (g_game && MessageBoxW(hwnd, L"The game is still running. Close the launcher anyway?",
-                                  L"inFAMOUS Second Son", MB_YESNO | MB_ICONQUESTION) != IDYES)
+                                  L"Ghost of Tsushima", MB_YESNO | MB_ICONQUESTION) != IDYES)
             return 0;
         DestroyWindow(hwnd);
         return 0;
@@ -2136,7 +2134,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
     RegisterClassExW(&wc);
 
-    g_hwnd = CreateWindowExW(WS_EX_APPWINDOW, wc.lpszClassName, L"inFAMOUS Second Son",
+    g_hwnd = CreateWindowExW(WS_EX_APPWINDOW, wc.lpszClassName, L"Ghost of Tsushima",
                              WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_SYSMENU, CW_USEDEFAULT,
                              CW_USEDEFAULT, 960, 600, nullptr, nullptr, instance, nullptr);
     const MARGINS shadow{1, 1, 1, 1};

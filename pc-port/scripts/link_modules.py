@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Link the user's inFAMOUS eboot/libc/Fios2 by exact, versioned PS4 identity.
+"""Link the user's Ghost of Tsushima eboot (plus any bundled modules) by exact, versioned PS4 identity.
 
 Format ISSPRB02 extends the entry probe with module/TLS metadata and native bindings.
 All changes affect only the generated workspace image, never original executables.
@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 import struct
 
-from prepare import ROOT, DEFAULT_GAME, EXPECTED_EBOOT, module, identity_key, names_database
+from prepare import ROOT, DEFAULT_GAME, EXPECTED_EBOOT, BUNDLED_MODULES, module, identity_key, names_database
 from ps4_format import span
 
 def align(value, alignment=65536):
@@ -152,7 +152,7 @@ def link(game, out):
     if out == ROOT.resolve() or out == game.resolve() or game.resolve() in out.parents:
         raise ValueError('output must be isolated inside pc-port')
     modules = [module(game / 'eboot.bin')] + [module(game / 'sce_module' / name)
-                                            for name in ('libc.prx', 'libSceFios2.prx')]
+                                            for name in BUNDLED_MODULES]
     if modules[0]['sha256'] != EXPECTED_EBOOT:
         raise ValueError('unsupported eboot identity')
     raw, report, rows = build_linked(modules)

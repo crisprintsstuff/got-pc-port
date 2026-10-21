@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "runtime.h"
+#include "game.h"
 #include "../gpu/iss_gpu.h"
 #include "../gpu/iss_dialog.h"
 #include <stdio.h>
@@ -33,7 +34,7 @@ int gpu_start(uint32_t sdk_version,uint64_t image_base){
     if(!initialize||!resolve_import||!handle_fault||!mapped)return -1;
     IssGpuCallbacks callbacks={0};callbacks.struct_size=sizeof(callbacks);callbacks.sdk_version=sdk_version;
     callbacks.psf_attributes=545259522;callbacks.width=1280;callbacks.height=720;
-    callbacks.serial="CUSA00004";callbacks.title="inFAMOUS Second Son";callbacks.user_dir=runtime_user_root();
+    callbacks.serial=GAME_TITLE_ID;callbacks.title=GAME_TITLE;callbacks.user_dir=runtime_user_root();
     callbacks.tsc_frequency=runtime_tsc_frequency;callbacks.process_time_us=runtime_process_time_us;
     callbacks.errno_location=runtime_errno;callbacks.backing=memory_backing;callbacks.clamp=memory_clamp;
     callbacks.visit_mappings=memory_visit;callbacks.protect=memory_gpu_protect;

@@ -252,7 +252,8 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (linked) {
-        if(native_install_hooks(image,image_size)<0)fail("native hook validation failed");
+        // The native hooks patch inFAMOUS code addresses; none apply to this game yet.
+        (void)native_install_hooks;
         runtime_tls_attach();
         phase = "module_init";
         for (uint64_t m = 1; m < module_count; ++m) {

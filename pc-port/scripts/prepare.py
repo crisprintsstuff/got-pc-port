@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Prepare an inFAMOUS Windows entry probe and an evidence-backed PS4 service map.
+"""Prepare a Ghost of Tsushima Windows entry probe and an evidence-backed PS4 service map.
 
 Reads only executables/modules/SFO, never game assets. No guest code is executed.
 """
@@ -15,6 +15,7 @@ import struct
 import sys
 
 from ps4_format import parse_self, span, unpack, sfo
+from game_id import EXPECTED_EBOOT, TITLE_ID, BUNDLED_MODULES
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = ROOT.parent
@@ -32,7 +33,6 @@ def _default_game():
 
 
 DEFAULT_GAME = _default_game()
-EXPECTED_EBOOT = '2d1ca79630d7bbe6fa29575f59aa7996d43071d74ac8e4f7d40137967d9039ab'
 REFERENCE_COMMIT = '4d4d20812c0af23a11c8b8d40f5e06a9054925ef'
 
 
@@ -218,9 +218,9 @@ def prepare(game, out):
     if main['sha256'] != EXPECTED_EBOOT:
         raise ValueError('unsupported eboot identity; review a new build before executing')
     meta = sfo((game / 'sce_sys/param.sfo').read_bytes())
-    if meta.get('TITLE_ID') != 'CUSA00004':
+    if meta.get('TITLE_ID') != TITLE_ID:
         raise ValueError('unexpected title ID')
-    bundled = [module(p) for p in sorted((game / 'sce_module').glob('*.prx'))]
+    bundled = [module(game / 'sce_module' / name) for name in BUNDLED_MODULES]
     hints, hint_source = names_database()
     exports = {}
     for m in bundled:

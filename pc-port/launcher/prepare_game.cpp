@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Game preparation for the launcher: the C++ port of scripts/ps4_format.py (parse_self),
 // scripts/prepare.py (module) and scripts/link_modules.py (build_linked). It links the user's
-// own eboot.bin, sce_module/libc.prx and sce_module/libSceFios2.prx by exact, versioned PS4
+// own eboot.bin, and any bundled sce_module/*.prx by exact, versioned PS4
 // identity into the ISSPRB02 image iss-probe.exe runs (boot-linked.bin). Byte identical to the
 // Python output. The game files are only read; nothing in the game folder is written.
 #define NOMINMAX
@@ -35,7 +35,7 @@ using u64 = std::uint64_t;
 using s64 = std::int64_t;
 using Bytes = std::vector<u8>;
 
-constexpr const char* ExpectedEboot = "2d1ca79630d7bbe6fa29575f59aa7996d43071d74ac8e4f7d40137967d9039ab";
+constexpr const char* ExpectedEboot = "4980b598c27f2782d02148152e28c5773159e4498fbd0743721d0392a791afbd";
 
 [[noreturn]] void Fail(const std::string& why) { throw std::runtime_error(why); }
 
@@ -467,10 +467,8 @@ std::wstring PrepareGame(const fs::path& game, const fs::path& out_file,
         mods.push_back(LoadModule(game / "eboot.bin", true));
         if (mods[0].sha256 != ExpectedEboot)
             return L"Unsupported eboot.bin version: this port needs the decrypted retail build of "
-                   L"inFAMOUS Second Son (CUSA00004) it was made for.";
-        progress(0.55f, L"Reading sce_module");
-        mods.push_back(LoadModule(game / "sce_module" / "libc.prx", false));
-        mods.push_back(LoadModule(game / "sce_module" / "libSceFios2.prx", false));
+                   L"Ghost of Tsushima (CUSA11456) patch 2.18 it was made for.";
+        // Ghost of Tsushima ships no sce_module/*.prx; libc comes from the runtime.
         progress(0.70f, L"Linking");
         const Bytes raw = BuildLinked(mods);
         progress(0.90f, L"Writing");
