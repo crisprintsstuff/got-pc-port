@@ -259,6 +259,31 @@ void runtime_report_thread(HANDLE out, const char *name, DWORD tid, const CONTEX
     runtime_report_write(out, "\n");
 }
 
+static int describe_address(char *out, size_t size, uint64_t at) {
+    HMODULE host = NULL; char path[MAX_PATH] = "";
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)(uintptr_t)at, &host) || !host)
+        return 0;
+    GetModuleFileNameA(host, path, sizeof(path));
+    const char *base = strrchr(path, '\\');
+    snprintf(out, size, "%s+0x%llx", base ? base + 1 : path, (unsigned long long)(at - (uintptr_t)host));
+    return 1;
+}
+// A non-guest thread: where it is, and return addresses into our own modules on its stack.
+void runtime_report_host_thread(HANDLE out, const char *name, DWORD tid, const CONTEXT *c) {
+    char where[160] = "?";
+    describe_address(where, sizeof(where), c->Rip);
+    runtime_report_write(out, "THREAD %s tid=%lu rip=%s scan:", name, tid, where);
+    uint64_t words[1024] = {0}; SIZE_T got = 0; int found = 0;
+    ReadProcessMemory(GetCurrentProcess(), (void *)c->Rsp, words, sizeof(words), &got);
+    for (size_t i = 0; i < got / 8 && found < 16; ++i) {
+        char item[160];
+        if (words[i] < 0x10000 || !describe_address(item, sizeof(item), words[i])) continue;
+        if (!strstr(item, "iss-gpu.dll") && !strstr(item, "iss-probe.exe")) continue;
+        runtime_report_write(out, " %s", item); ++found;
+    }
+    runtime_report_write(out, "\r\n");
+}
+
 uintptr_t runtime_wrap_binding(const char *identity, uintptr_t native) {
     static int enabled = -1;
     if (enabled < 0) { const char *v = getenv("ISS_TRACE_MSPACE"); enabled = v && v[0] == '1'; }

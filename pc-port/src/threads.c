@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "runtime.h"
+#include <tlhelp32.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -199,6 +200,36 @@ void runtime_report_threads(HANDLE out, int resume) {
         CloseHandle(h);
     }
     ReleaseSRWLockShared(&registry);
+    // Then every other thread of the process (renderer, driver, SDL, ...), named by its thread
+    // description, with return addresses into iss-gpu.dll / iss-probe.exe found on its stack.
+    typedef HRESULT (WINAPI *Describe)(HANDLE, PWSTR *);
+    HMODULE kernel = GetModuleHandleW(L"kernelbase.dll");
+    Describe describe = kernel ? (Describe)(void *)GetProcAddress(kernel, "GetThreadDescription") : NULL;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    THREADENTRY32 entry; entry.dwSize = sizeof(entry);
+    for (BOOL more = snapshot != INVALID_HANDLE_VALUE && Thread32First(snapshot, &entry); more; more = Thread32Next(snapshot, &entry)) {
+        if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
+        int guest = 0;
+        AcquireSRWLockShared(&registry);
+        for (Thread *t = threads; t && !guest; t = t->next) guest = t->id == entry.th32ThreadID;
+        ReleaseSRWLockShared(&registry);
+        if (guest) continue;
+        HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ThreadID);
+        if (!h) continue;
+        char name[96] = "host";
+        PWSTR wide = NULL;
+        if (describe && SUCCEEDED(describe(h, &wide)) && wide) {
+            if (wide[0]) { snprintf(name, sizeof(name), "host:"); WideCharToMultiByte(CP_UTF8, 0, wide, -1, name + 5, (int)sizeof(name) - 5, NULL, NULL); }
+            LocalFree(wide);
+        }
+        if (SuspendThread(h) != (DWORD)-1) {
+            CONTEXT c; memset(&c, 0, sizeof(c)); c.ContextFlags = CONTEXT_FULL;
+            if (GetThreadContext(h, &c)) runtime_report_host_thread(out, name, entry.th32ThreadID, &c);
+            if (resume) ResumeThread(h);
+        }
+        CloseHandle(h);
+    }
+    if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
 }
 uintptr_t thread_resolve(const char *identity) {
     if (!strstr(identity,"#libkernel#1#libkernel#257")) return 0;
