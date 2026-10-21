@@ -165,12 +165,12 @@ static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
 static void hang_report(const char *why, int resume) {
     char path[MAX_PATH]; GetModuleFileNameA(NULL, path, sizeof(path));
     char *slash = strrchr(path, '\\'); if (slash) strcpy(slash + 1, "hang-report.txt");
-    FILE *out = fopen(path, "a");
-    if (!out) out = stderr;
-    fprintf(out, "HANG_REPORT begin (%s) tick_ms=%llu\n", why, (unsigned long long)GetTickCount64());
+    HANDLE out = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (out == INVALID_HANDLE_VALUE) out = GetStdHandle(STD_ERROR_HANDLE);
+    runtime_report_write(out, "HANG_REPORT begin (%s) tick_ms=%llu\r\n", why, (unsigned long long)GetTickCount64());
     runtime_report_threads(out, resume);
-    fprintf(out, "HANG_REPORT end\n");
-    if (out != stderr) fclose(out);
+    runtime_report_write(out, "HANG_REPORT end\r\n");
+    if (out != GetStdHandle(STD_ERROR_HANDLE)) CloseHandle(out);
 }
 // Ctrl+C or Ctrl+Break: report every guest thread, then exit, so a hang shows who waits where.
 static BOOL WINAPI console_break(DWORD event) {
@@ -188,7 +188,9 @@ static DWORD WINAPI hang_timer(void *seconds) {
 int main(int argc, char **argv) {
     SetConsoleCtrlHandler(console_break, TRUE);
     {   const char *after = getenv("ISS_HANG_REPORT"); int seconds = after ? atoi(after) : 0;
-        if (seconds > 0) { HANDLE timer = CreateThread(NULL, 0, hang_timer, (void *)(uintptr_t)seconds, 0, NULL); if (timer) CloseHandle(timer); } }
+        if (seconds > 0) { HANDLE timer = CreateThread(NULL, 0, hang_timer, (void *)(uintptr_t)seconds, 0, NULL);
+            printf("HANG_REPORT armed: %d s (%s)\n", seconds, timer ? "timer started" : "timer thread failed"); fflush(stdout);
+            if (timer) CloseHandle(timer); } }
     setvbuf(stdout,NULL,_IONBF,0);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     if (argc != 3 || (strcmp(argv[2], "--map-only") && strcmp(argv[2], "--entry"))) {

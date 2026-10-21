@@ -3,6 +3,7 @@
 #include "runtime.h"
 #include <Zydis/Zydis.h>
 #include <malloc.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -222,34 +223,40 @@ static void *GUEST_ABI trace_reallocalign(void *m, void *p, uint64_t align, uint
 }
 // One line per thread for the Ctrl+C hang report: where it is (image offset, or host module and
 // offset), the rbp chain through guest frames, and image return addresses found on its stack.
-void runtime_report_thread(FILE *out, const char *name, DWORD tid, const CONTEXT *c) {
+void runtime_report_write(HANDLE out, const char *format, ...) {
+    char text[512]; va_list args; va_start(args, format);
+    int n = _vsnprintf(text, sizeof(text) - 1, format, args); va_end(args);
+    if (n < 0 || n > (int)sizeof(text) - 1) n = (int)sizeof(text) - 1;
+    DWORD written; WriteFile(out, text, (DWORD)n, &written, NULL);
+}
+void runtime_report_thread(HANDLE out, const char *name, DWORD tid, const CONTEXT *c) {
     uint64_t rip = c->Rip;
-    fprintf(out, "THREAD %s tid=%lu rip=", name, tid);
-    if (rip >= (uintptr_t)source_image && rip - (uintptr_t)source_image < source_size) fprintf(out, "+0x%llx", (unsigned long long)(rip - (uintptr_t)source_image));
+    runtime_report_write(out, "THREAD %s tid=%lu rip=", name, tid);
+    if (rip >= (uintptr_t)source_image && rip - (uintptr_t)source_image < source_size) runtime_report_write(out, "+0x%llx", (unsigned long long)(rip - (uintptr_t)source_image));
     else {
         HMODULE host = NULL; char path[MAX_PATH] = "?";
         if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)(uintptr_t)rip, &host) && host)
             GetModuleFileNameA(host, path, sizeof(path));
         const char *base = strrchr(path, '\\');
-        fprintf(out, "%s+0x%llx", base ? base + 1 : path, (unsigned long long)(host ? rip - (uintptr_t)host : rip));
+        runtime_report_write(out, "%s+0x%llx", base ? base + 1 : path, (unsigned long long)(host ? rip - (uintptr_t)host : rip));
     }
-    fprintf(out, " chain:");
+    runtime_report_write(out, " chain:");
     uint64_t frame = c->Rbp, link[2]; SIZE_T copied;
     for (int depth = 0; depth < 16 && frame && !(frame & 7); ++depth) {
         if (!ReadProcessMemory(GetCurrentProcess(), (void *)frame, link, sizeof(link), &copied) || copied != sizeof(link)) break;
         if (link[1] < (uintptr_t)source_image || link[1] - (uintptr_t)source_image >= source_size) break;
-        fprintf(out, " +0x%llx", (unsigned long long)(link[1] - (uintptr_t)source_image));
+        runtime_report_write(out, " +0x%llx", (unsigned long long)(link[1] - (uintptr_t)source_image));
         if (link[0] <= frame) break;
         frame = link[0];
     }
     uint64_t words[512] = {0}; SIZE_T got = 0; int found = 0;
     ReadProcessMemory(GetCurrentProcess(), (void *)c->Rsp, words, sizeof(words), &got);
-    fprintf(out, " scan:");
+    runtime_report_write(out, " scan:");
     for (size_t i = 0; i < got / 8 && found < 10; ++i)
         if (words[i] >= (uintptr_t)source_image && words[i] - (uintptr_t)source_image < source_size) {
-            fprintf(out, " +0x%llx", (unsigned long long)(words[i] - (uintptr_t)source_image)); ++found;
+            runtime_report_write(out, " +0x%llx", (unsigned long long)(words[i] - (uintptr_t)source_image)); ++found;
         }
-    fputc('\n', out);
+    runtime_report_write(out, "\n");
 }
 
 uintptr_t runtime_wrap_binding(const char *identity, uintptr_t native) {

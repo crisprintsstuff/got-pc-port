@@ -19,9 +19,11 @@ uintptr_t runtime_resolve(const char *identity, int data);
 // ISS_TRACE_MSPACE=1: wraps the bound libc.prx sceLibcMspaceMemalign/Reallocalign to log large
 // requests and failures with the calling eboot offset. Returns the wrapper, or 0 to keep the export.
 uintptr_t runtime_wrap_binding(const char *identity, uintptr_t native);
-void runtime_report_thread(FILE *out, const char *name, DWORD tid, const CONTEXT *c);
+// The hang report writes through Win32 only (no CRT locks a stuck thread might hold).
+void runtime_report_write(HANDLE out, const char *format, ...);
+void runtime_report_thread(HANDLE out, const char *name, DWORD tid, const CONTEXT *c);
 // Writes every guest thread's position (hang-report.txt: on Ctrl+C, or ISS_HANG_REPORT=<seconds>).
-void runtime_report_threads(FILE *out, int resume);
+void runtime_report_threads(HANDLE out, int resume);
 int runtime_emulate_tls(EXCEPTION_POINTERS *exception);
 uint64_t runtime_tls_fault_count(void);
 uintptr_t sync_resolve(const char *identity);
