@@ -290,20 +290,23 @@ void runtime_report_dump(HANDLE out, uint64_t address, unsigned length) {
     }
 }
 // ISS_HANG_DUMP=[*]+<image offset>:<bytes>|[*]<address>:<bytes>[,...]; a leading * dumps what the
-// 8-byte pointer at that address points to.
+// 8-byte pointer at that address points to, optionally at *<address>+<offset>:<bytes>.
 void runtime_report_dumps(HANDLE out) {
     const char *spec = getenv("ISS_HANG_DUMP");
     for (const char *s = spec; s && *s;) {
         int indirect = *s == '*'; if (indirect) ++s;
         int relative = *s == '+'; if (relative) ++s;
-        unsigned long long address = 0; unsigned length = 0; int used = 0;
-        if (sscanf(s, "%llx:%i%n", &address, &length, &used) < 2) break;
+        unsigned long long address = 0, offset = 0; unsigned length = 0; int used = 0;
+        // *<address>+<offset>:<bytes> dumps <offset> past where the pointer points.
+        if (indirect && sscanf(s, "%llx+%llx:%i%n", &address, &offset, &length, &used) == 3) {}
+        else if (offset = 0, sscanf(s, "%llx:%i%n", &address, &length, &used) < 2) break;
         uint64_t at = relative ? (uintptr_t)source_image + address : address;
         if (indirect) {
             uint64_t pointer = 0; SIZE_T got = 0;
             ReadProcessMemory(GetCurrentProcess(), (void *)(uintptr_t)at, &pointer, sizeof(pointer), &got);
-            runtime_report_write(out, "POINTER at 0x%llx = 0x%llx\r\n", (unsigned long long)at, (unsigned long long)pointer);
-            at = pointer;
+            runtime_report_write(out, "POINTER at 0x%llx = 0x%llx (+0x%llx)\r\n", (unsigned long long)at, (unsigned long long)pointer,
+                                 offset);
+            at = pointer + offset;
         }
         runtime_report_dump(out, at, length);
         s += used; if (*s == ',') ++s; else break;
