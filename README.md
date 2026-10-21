@@ -42,6 +42,16 @@ Build steps (Windows 11, clang-cl, CMake, a shadPS4-perf checkout) are unchanged
 see `docs/UPSTREAM-INFAMOUS-README.md`. Any Visual Studio 2022 or later with "Desktop development
 with C++" provides the Windows SDK; the scripts find it with vswhere (or set `VCVARS64`).
 
+## Renderer sources
+
+The renderer builds from shadPS4-perf at `584374867d6a`, a commit no longer on any branch upstream.
+A private mirror keeps it (branch `port-base`):
+
+    git clone -b port-base https://github.com/crisprintsstuff/shadPS4-perf research/shadPS4-perf
+    cd research/shadPS4-perf
+    git submodule update --init --recursive
+    git apply ../../pc-port/third_party/shadPS4-perf-local.patch
+
 ## License
 
 GPL-2.0-or-later, as upstream. See `pc-port/LICENSE` and `pc-port/THIRD_PARTY.md`.
