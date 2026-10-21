@@ -24,6 +24,7 @@ void runtime_report_write(HANDLE out, const char *format, ...);
 void runtime_report_thread(HANDLE out, const char *name, DWORD tid, const CONTEXT *c);
 void runtime_report_host_thread(HANDLE out, const char *name, DWORD tid, const CONTEXT *c);
 void runtime_report_dump(HANDLE out, uint64_t address, unsigned length);
+void runtime_report_sample(HANDLE out, const char *name, int sample, const CONTEXT *c);
 void runtime_report_dumps(HANDLE out);
 // Writes every guest thread's position (hang-report.txt: on Ctrl+C, or ISS_HANG_REPORT=<seconds>).
 void runtime_report_threads(HANDLE out, int resume);

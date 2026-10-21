@@ -275,6 +275,29 @@ void runtime_report_thread(HANDLE out, const char *name, DWORD tid, const CONTEX
         s += used; if (*s == ',') ++s; else break;
     }
 }
+// A short line for a repeated sample: position and rbp chain only.
+void runtime_report_sample(HANDLE out, const char *name, int sample, const CONTEXT *c) {
+    uint64_t rip = c->Rip;
+    if (rip >= (uintptr_t)source_image && rip - (uintptr_t)source_image < source_size)
+        runtime_report_write(out, "SAMPLE %s #%d rip=+0x%llx chain:", name, sample, (unsigned long long)(rip - (uintptr_t)source_image));
+    else {
+        HMODULE host = NULL; char path[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)(uintptr_t)rip, &host) && host)
+            GetModuleFileNameA(host, path, sizeof(path));
+        const char *base = strrchr(path, '\\');
+        runtime_report_write(out, "SAMPLE %s #%d rip=%s+0x%llx chain:", name, sample, base ? base + 1 : path,
+                             (unsigned long long)(host ? rip - (uintptr_t)host : rip));
+    }
+    uint64_t frame = c->Rbp, link[2]; SIZE_T copied;
+    for (int depth = 0; depth < 12 && frame && !(frame & 7); ++depth) {
+        if (!ReadProcessMemory(GetCurrentProcess(), (void *)frame, link, sizeof(link), &copied) || copied != sizeof(link)) break;
+        if (link[1] < (uintptr_t)source_image || link[1] - (uintptr_t)source_image >= source_size) break;
+        runtime_report_write(out, " +0x%llx", (unsigned long long)(link[1] - (uintptr_t)source_image));
+        if (link[0] <= frame) break;
+        frame = link[0];
+    }
+    runtime_report_write(out, "\r\n");
+}
 // Hex dump, 16 bytes a line, of readable memory; image addresses are shown as offsets.
 void runtime_report_dump(HANDLE out, uint64_t address, unsigned length) {
     if (length > 65536) length = 65536;

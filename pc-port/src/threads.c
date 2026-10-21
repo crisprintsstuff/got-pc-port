@@ -196,7 +196,18 @@ void runtime_report_threads(HANDLE out, int resume) {
         if (GetExitCodeThread(h, &code) && code == STILL_ACTIVE && SuspendThread(h) != (DWORD)-1) {
             CONTEXT c; memset(&c, 0, sizeof(c)); c.ContextFlags = CONTEXT_FULL;
             if (GetThreadContext(h, &c)) runtime_report_thread(out, t->name, t->id, &c);
-            if (resume) ResumeThread(h);
+            if (resume) {
+                ResumeThread(h);
+                // Seven more samples 50 ms apart: a looping thread shows its loop, a blocked one
+                // the same wait. Only the position and chain are repeated.
+                for (int sample = 1; sample < 8; ++sample) {
+                    Sleep(50);
+                    if (SuspendThread(h) == (DWORD)-1) break;
+                    memset(&c, 0, sizeof(c)); c.ContextFlags = CONTEXT_FULL;
+                    if (GetThreadContext(h, &c)) runtime_report_sample(out, t->name, sample, &c);
+                    ResumeThread(h);
+                }
+            }
         }
         CloseHandle(h);
     }
