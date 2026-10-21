@@ -272,17 +272,23 @@ static void *map_view(HANDLE section,uint64_t span,uintptr_t requested,int fixed
         view=MapViewOfFileEx(section,FILE_MAP_ALL_ACCESS|FILE_MAP_EXECUTE,0,0,(SIZE_T)span,(void *)base);
     return view;
 }
+static int32_t flexible_failed(const char *why,void **address,uint64_t length,int32_t prot,int32_t flags,int32_t result){
+    printf("Flexible mapping failed (%s): hint=0x%llx bytes=%llu prot=0x%x flags=0x%x winerror=%lu\n",why,
+           address?(unsigned long long)(uintptr_t)*address:0ull,(unsigned long long)length,prot,flags,GetLastError());
+    return result;
+}
 int32_t GUEST_ABI memory_map_flexible(void **address,uint64_t length,int32_t prot,int32_t flags,const char *name){
-    if(!address||!length||length%16384||(prot&~0x37))return ERR_INVALID;
+    if(!address||!length||length%16384||(prot&~0x37))return flexible_failed("arguments",address,length,prot,flags,ERR_INVALID);
     uint64_t span=round_up(length,65536);
     HANDLE section=CreateFileMappingW(INVALID_HANDLE_VALUE,NULL,PAGE_EXECUTE_READWRITE,(DWORD)(span>>32),(DWORD)span,NULL);
-    if(!section)return ERR_NOMEM;
+    if(!section)return flexible_failed("section",address,length,prot,flags,ERR_NOMEM);
     unsigned char *shadow=MapViewOfFile(section,FILE_MAP_READ|FILE_MAP_WRITE,0,0,(SIZE_T)span);
     void *view=shadow?map_view(section,span,(uintptr_t)*address,flags&0x10):NULL;
     CloseHandle(section);
     DWORD old;
     if(!view||!VirtualProtect(view,(SIZE_T)span,page_mode(prot),&old)){
-        if(view)UnmapViewOfFile(view);if(shadow)UnmapViewOfFile(shadow);return ERR_NOMEM;
+        int32_t r=flexible_failed(!shadow?"shadow view":!view?"guest view":"protection",address,length,prot,flags,ERR_NOMEM);
+        if(view)UnmapViewOfFile(view);if(shadow)UnmapViewOfFile(shadow);return r;
     }
     *address=view;
     register_mapping((uintptr_t)view,length,shadow,(uint32_t)(prot&3)|((prot&4)?4u:0));
