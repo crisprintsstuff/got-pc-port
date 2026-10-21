@@ -185,23 +185,38 @@ typedef void *(GUEST_ABI *ReallocalignFn)(void *, void *, uint64_t, uint64_t);
 static MemalignFn native_memalign;
 static ReallocalignFn native_reallocalign;
 static volatile LONG64 traced_bytes;
-static void trace_allocation(const char *what, void *mspace, uint64_t size, const void *result, const void *caller) {
+static uint64_t image_offset(uint64_t at) {
+    return at >= (uintptr_t)source_image && at - (uintptr_t)source_image < source_size ? at - (uintptr_t)source_image : at;
+}
+// frame: the rbp at the wrapper's entry, or the wrapper's own frame; either way the chain of
+// [rbp] links and [rbp+8] return addresses leads through the guest's frames.
+static void trace_allocation(const char *what, void *mspace, uint64_t size, const void *result, const void *caller, uint64_t frame) {
     uint64_t total = (uint64_t)InterlockedAdd64(&traced_bytes, (LONG64)size);
     if (size < 262144 && result) return;
-    uintptr_t at = (uintptr_t)caller;
-    fprintf(stderr, "MSPACE %s mspace=%p bytes=%llu result=%p caller=+0x%llx requested_total=%llu MB\n", what, mspace,
-            (unsigned long long)size, result,
-            (unsigned long long)(at >= (uintptr_t)source_image && at - (uintptr_t)source_image < source_size ? at - (uintptr_t)source_image : at),
-            (unsigned long long)(total >> 20));
+    char chain[400]; int used = 0;
+    for (int depth = 0; depth < 12 && frame && !(frame & 7) && used < 360; ++depth) {
+        uint64_t link[2]; SIZE_T copied;
+        if (!ReadProcessMemory(GetCurrentProcess(), (void *)frame, link, sizeof(link), &copied) || copied != sizeof(link)) break;
+        if (link[1] >= (uintptr_t)source_image && link[1] - (uintptr_t)source_image < source_size)
+            used += snprintf(chain + used, sizeof(chain) - (size_t)used, " +0x%llx", (unsigned long long)image_offset(link[1]));
+        if (link[0] <= frame) break;
+        frame = link[0];
+    }
+    chain[used] = 0;
+    fprintf(stderr, "MSPACE %s tid=%lu mspace=%p bytes=%llu result=%p caller=+0x%llx requested_total=%llu MB stack:%s\n", what,
+            GetCurrentThreadId(), mspace, (unsigned long long)size, result, (unsigned long long)image_offset((uintptr_t)caller),
+            (unsigned long long)(total >> 20), chain);
 }
 static void *GUEST_ABI trace_memalign(void *m, uint64_t align, uint64_t size) {
+    uint64_t frame; __asm__ volatile("mov %%rbp, %0" : "=r"(frame));
     void *r = native_memalign(m, align, size);
-    trace_allocation("memalign", m, size, r, __builtin_return_address(0));
+    trace_allocation("memalign", m, size, r, __builtin_return_address(0), frame);
     return r;
 }
 static void *GUEST_ABI trace_reallocalign(void *m, void *p, uint64_t align, uint64_t size) {
+    uint64_t frame; __asm__ volatile("mov %%rbp, %0" : "=r"(frame));
     void *r = native_reallocalign(m, p, align, size);
-    trace_allocation("reallocalign", m, size, r, __builtin_return_address(0));
+    trace_allocation("reallocalign", m, size, r, __builtin_return_address(0), frame);
     return r;
 }
 uintptr_t runtime_wrap_binding(const char *identity, uintptr_t native) {
