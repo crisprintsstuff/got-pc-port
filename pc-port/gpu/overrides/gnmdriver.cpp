@@ -1471,6 +1471,10 @@ int PS4_SYSV_ABI sceGnmMapComputeQueue(u32 pipe_id, u32 queue_id, VAddr ring_bas
     if (!gnm_vqid) return ORBIS_GNM_ERROR_COMPUTEQUEUE_INVALID_QUEUE_ID;
     LOG_INFO(Lib_GnmDriver, "ASC pipe {} queue {} mapped to vqueue {}", pipe_id, queue_id,
              *gnm_vqid);
+    if (irq_log) {
+        std::fprintf(stderr, "GNM_MAP_COMPUTE_QUEUE pipe=%u queue=%u vqid=%u ring=0x%llx size_dw=%u\n", pipe_id,
+                     queue_id, *gnm_vqid, static_cast<unsigned long long>(ring_base_addr), ring_size_dw);
+    }
 
     asc_next_offs_dw[*gnm_vqid - 1] = 0;
     *read_ptr_addr = 0u;
@@ -2628,6 +2632,9 @@ s32 PS4_SYSV_ABI sceGnmSubmitDone() {
 }
 
 int PS4_SYSV_ABI sceGnmUnmapComputeQueue(u32 vqid) {
+    if (irq_log) {
+        std::fprintf(stderr, "GNM_UNMAP_COMPUTE_QUEUE vqid=%u\n", static_cast<u32>(vqid));
+    }
     std::optional<u64> generation;
     {
         std::scoped_lock lk{m_submit_lock};
