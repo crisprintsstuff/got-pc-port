@@ -10,7 +10,8 @@ import sys
 from vs_env import environment
 
 ROOT = Path(__file__).resolve().parents[1]
-CLANG = ROOT.parent / 'tools/llvm/bin/clang-cl.exe'
+# CLANG_CL=<path to clang-cl.exe> overrides the repo's own LLVM (CI uses the runner's).
+CLANG = Path(os.environ.get('CLANG_CL') or ROOT.parent / 'tools/llvm/bin/clang-cl.exe')
 
 
 def build(output):
