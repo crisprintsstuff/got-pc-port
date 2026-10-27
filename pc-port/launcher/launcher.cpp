@@ -219,11 +219,33 @@ bool FileContains(const fs::path& path, const char* needle) {
     return data.find(needle) != std::string::npos;
 }
 
+// True when the folder holds a .pkg package of the game ("\x7fCNT", content id at 0x40).
+bool HasGamePackage(const fs::path& dir) {
+    std::error_code ec;
+    for (auto it = fs::directory_iterator(dir, ec); it != fs::directory_iterator(); it.increment(ec)) {
+        auto ext = it->path().extension().wstring();
+        for (auto& c : ext) c = wchar_t(towlower(c));
+        if (ext != L".pkg" || !it->is_regular_file(ec)) continue;
+        std::ifstream f(it->path(), std::ios::binary);
+        char header[0x64] = {};
+        f.read(header, sizeof(header));
+        if (memcmp(header, "\x7f" "CNT", 4) == 0 && std::string(header + 0x40, 36).find("CUSA11456") != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
 // Empty when the folder is a Ghost of Tsushima (CUSA11456) game folder, else the reason.
 std::wstring CheckGameDir(const fs::path& dir) {
     std::error_code ec;
     if (dir.empty() || !fs::is_directory(dir, ec)) return L"Folder not found.";
-    if (!fs::is_regular_file(dir / "eboot.bin", ec)) return L"eboot.bin is missing in this folder.";
+    if (!fs::is_regular_file(dir / "eboot.bin", ec)) {
+        // A package is still encrypted for the console it was licensed to; the port runs the
+        // decrypted, unpacked game (eboot.bin, sce_sys\, sce_module\) dumped from that console.
+        if (HasGamePackage(dir))
+            return L"This folder has the game's .pkg, which stays encrypted. Select your decrypted game dump (eboot.bin, sce_sys).";
+        return L"eboot.bin is missing in this folder.";
+    }
     if (!fs::is_regular_file(dir / "sce_sys" / "param.sfo", ec))
         return L"sce_sys\\param.sfo is missing in this folder.";
     if (!FileContains(dir / "sce_sys" / "param.sfo", "CUSA11456"))
@@ -981,20 +1003,9 @@ void FixFocus() {
 
 bool Lit(int id) { return g_hover == id || (g_focus == id && g_hover == HotNone); }
 
-// The names of the game's DLC licenses (content id labels), for the setup page.
-std::wstring DlcName(const std::string& label) {
-    static const std::map<std::string, const wchar_t*> names = {
-        {"UNLOCKCOLEMISSIO", L"Cole's Legacy"},
-        {"UNLOCKCOLEJACKET", L"Cole's Jacket"},
-        {"UNLOCKVESTHANDPR", L"Cole's Legendary Vest"},
-        {"UNLOCKVESTEXIST0", L"EXIST Vest"},
-        {"UNLOCKVESTJOS000", L"JOS Vest"},
-        {"UNLOCKVESTPENNYA", L"Penny Arcade Vest"},
-        {"UNLOCKVESTSKELET", L"iam8bit Vest"},
-    };
-    const auto it = names.find(label);
-    return it != names.end() ? it->second : Widen(label);
-}
+// The names of the game's DLC licenses, for the setup page: their content id labels as they are
+// (Ghost of Tsushima's are not mapped to names yet).
+std::wstring DlcName(const std::string& label) { return Widen(label); }
 
 std::wstring DlcSummary() {
     const fs::path dir = DlcDir();
@@ -1202,7 +1213,7 @@ void Paint(HDC hdc, int width, int height) {
             Font small_title(oswald, S(22), FontStyleRegular, UnitPixel);
             SpacedText(g, L"GHOST OF", small_title, text_brush, left + S(2), y, S(3));
             Font big(oswald, S(52), FontStyleBold, UnitPixel);
-            g.DrawString(L"SECOND SON", -1, &big, PointF(left - S(2), y + S(22)), &yellow);
+            g.DrawString(L"TSUSHIMA", -1, &big, PointF(left - S(2), y + S(22)), &yellow);
             y += S(104);
         }
     }
@@ -1419,7 +1430,7 @@ void Paint(HDC hdc, int width, int height) {
                 for (const auto& l : labels) list += (list.empty() ? L"" : L"  •  ") + DlcName(l);
                 g.DrawString(list.c_str(), -1, &hint, RectF(left, y2 + S(76), S(560), S(40)), nullptr, &dim_brush);
             } else {
-                g.DrawString(L"Your DLC .pkg files: unlocks costumes and Cole's Legacy.", -1, &hint,
+                g.DrawString(L"Your DLC .pkg files: unlocks your add-on content.", -1, &hint,
                              PointF(left + S(184), y2 + S(40)), &dim_brush);
             }
             button(L"CONTINUE", HotContinue, RectF(left, y2 + S(124), S(250), S(44)), true);

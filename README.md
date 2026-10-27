@@ -5,12 +5,24 @@ A native Windows runtime for the PS4 version of Ghost of Tsushima, forked from
 The game's own x86-64 code runs directly on the host CPU; a custom runtime replaces the PS4
 system libraries, and graphics go through a Vulkan renderer derived from shadPS4.
 
-**Status: not playable.** The executable parses and links offline (591 imports). libc and many
-services are still missing from the runtime. Nothing has been built or run on Windows.
+**Status: not playable.** The port builds on Windows and the game's code runs: it links (591
+imports), boots through the runtime and the GPU DLL, and is now being debugged where it stops,
+with crash reports, hang reports (`ISS_HANG_REPORT`) and GPU queue logs (`ISS_IRQ_LOG`). The
+latest commits work on GPU compute queue interrupts and fences.
 
 No game files, keys or copyrighted assets are part of this repository. You need a decrypted
 dump of your own copy: the retail eboot.bin from patch 2.18 (sha256 `4980b598…91afbd`).
 The game identity lives in `pc-port/scripts/game_id.py` and `pc-port/src/game.h`.
+
+### Why a .pkg is not enough
+
+The port reads the unpacked game folder (`eboot.bin`, `sce_sys/`, `sce_module/`), and the
+`eboot.bin` in it must be decrypted. A retail `.pkg` stays encrypted for the console it is
+licensed to, and the executables inside are encrypted again. Only that console can decrypt them,
+so the port cannot use a retail `.pkg` directly. Dump the installed game from your own PS4
+instead. The launcher says so when it is given a folder that holds the game's `.pkg` and no
+`eboot.bin`. DLC `.pkg` files are different: the launcher reads only their content ids, to unlock
+the DLC.
 
 ## Differences from the inFAMOUS port
 
@@ -29,7 +41,7 @@ The game identity lives in `pc-port/scripts/game_id.py` and `pc-port/src/game.h`
 
 1. ~~Retarget identity checks, launcher and save paths~~
 2. ~~libc replacement and offline stubs~~ (`pc-port/src/libc*.c`, `pc-port/src/offline.c`; untested on Windows)
-3. Build on Windows; run to the first unimplemented call
+3. ~~Build on Windows; run to the first unimplemented call~~
 4. The remaining imports: 55 of the eboot (Audio3d, Rtc, save data memory, trophy info, kernel event
    queues and memory) and 57 of libc.prx/Fios2 (kernel: flexible memory, rwlocks, atexit, time)
 5. Renderer bring-up
@@ -38,6 +50,10 @@ The game identity lives in `pc-port/scripts/game_id.py` and `pc-port/src/game.h`
 
     python pc-port/scripts/prepare.py --game "<game folder>" --out pc-port/out/got
     python pc-port/scripts/link_modules.py --game "<game folder>" --out pc-port/out/got
+
+To run a build, put the path of your game folder on the first line of `pc-port/out/game_dir.txt`
+and start `Launch.cmd`, or `pc-port\scripts\run_game.ps1` for its debugging options
+(`-HangReport`, `-Dump`, `-DumpReg`, `-TraceMspace`, `-IrqLog`). The output goes to `run.log`.
 
 Build steps (Windows 11, clang-cl, CMake, a shadPS4-perf checkout) are unchanged from upstream;
 see `docs/UPSTREAM-INFAMOUS-README.md`. Any Visual Studio 2022 or later with "Desktop development
