@@ -12,8 +12,8 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       # The runner has Visual Studio (found by vswhere) and LLVM; the launcher needs no other
@@ -22,7 +22,7 @@ jobs:
         env:
           CLANG_CL: C:\Program Files\LLVM\bin\clang-cl.exe
         run: python pc-port/scripts/build_launcher.py --output "pc-port/out/launcher/Ghost of Tsushima Launcher.exe"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: launcher
           path: pc-port/out/launcher/Ghost of Tsushima Launcher.exe

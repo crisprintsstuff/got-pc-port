@@ -699,7 +699,8 @@ std::wstring LaunchGame(HWND notify) {
                              FILE_SHARE_READ, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     HANDLE err = CreateFileW((g_session.log_dir / "stderr.log").c_str(), GENERIC_WRITE,
                              FILE_SHARE_READ, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    STARTUPINFOW si{sizeof(si)};
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     si.hStdOutput = out;
@@ -1121,7 +1122,7 @@ bool BarItem(int id) {
     return id == HotSettings || id == HotQuit || id == HotBack || id == HotControllers ||
            id == HotMapReset || id == HotMapDone || (id >= HotMap0 && id < HotMap0 + kPadSourceCount) ||
            (id >= HotSetting0 && id < HotSetting0 + int(g_settings.size())) ||
-           (id >= HotAction0 && id < HotAction0 + ActCount);
+           (id >= HotAction0 && id < HotAction0 + int(ActCount));
 }
 
 void Paint(HDC hdc, int width, int height) {
@@ -1723,7 +1724,7 @@ void Activate(int id) {
         g_focus = HotPlay;
         SetStatus(L"");
         if (!PreparedReady()) StartPreparation(false);
-    } else if (id >= HotTab0 && id < HotTab0 + TabCount) {
+    } else if (id >= HotTab0 && id < HotTab0 + int(TabCount)) {
         if (g_tab != id - HotTab0) Restart();
         g_tab = id - HotTab0;
         g_focus = HotNone;
@@ -1731,7 +1732,7 @@ void Activate(int id) {
         Redraw();
     } else if (id >= HotSetting0 && id < HotSetting0 + int(g_settings.size())) {
         Cycle(id, +1);
-    } else if (id >= HotAction0 && id < HotAction0 + ActCount) {
+    } else if (id >= HotAction0 && id < HotAction0 + int(ActCount)) {
         switch (id - HotAction0) {
         case ActDlcFolder: ChooseDlcFolder(); break;
         case ActChangeGame: ChooseGameFolder(); break;
@@ -1860,7 +1861,8 @@ void UpdateScale() {
 void SetFullscreen(bool on) {
     g_fullscreen = on;
     HMONITOR mon = MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi{sizeof(mi)};
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
     GetMonitorInfoW(mon, &mi);
     if (on) {
         SetWindowLongW(g_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE | WS_MINIMIZEBOX | WS_SYSMENU);
@@ -1933,7 +1935,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (id != g_hover) {
             g_hover = id;
             if (id != HotNone && id != HotClose && id != HotMinimize && id != HotHelp &&
-                !(id >= HotTab0 && id < HotTab0 + TabCount))
+                !(id >= HotTab0 && id < HotTab0 + int(TabCount)))
                 g_focus = id;
             Redraw();
         }
@@ -2136,7 +2138,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
     FixFocus();
 
-    WNDCLASSEXW wc{sizeof(wc)};
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
