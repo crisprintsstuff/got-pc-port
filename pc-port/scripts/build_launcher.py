@@ -31,7 +31,7 @@ def build(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path,
-                        default=ROOT / 'out' / 'launcher-staging' / 'inFAMOUS Second Son Launcher.exe')
+                        default=ROOT / 'out' / 'launcher-staging' / 'Ghost of Tsushima Launcher.exe')
     args = parser.parse_args()
     try:
         build(args.output.resolve())
