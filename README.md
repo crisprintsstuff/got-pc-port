@@ -48,8 +48,8 @@ the DLC.
 
 ## Preparing (any OS with Python 3)
 
-    python pc-port/scripts/prepare.py --game "<game folder>" --out pc-port/out/got
-    python pc-port/scripts/link_modules.py --game "<game folder>" --out pc-port/out/got
+    python pc-port/scripts/prepare.py --game "<game folder>"
+    python pc-port/scripts/link_modules.py --game "<game folder>"
 
 To run a build, put the path of your game folder on the first line of `pc-port/out/game_dir.txt`
 and start `Launch.cmd`, or `pc-port\scripts\run_game.ps1` for its debugging options
