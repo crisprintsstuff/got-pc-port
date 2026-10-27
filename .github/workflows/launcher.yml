@@ -22,7 +22,13 @@ jobs:
         env:
           CLANG_CL: C:\Program Files\LLVM\bin\clang-cl.exe
         run: python pc-port/scripts/build_launcher.py --output "pc-port/out/launcher/Ghost of Tsushima Launcher.exe"
+      # The launcher loads its font from assets\fonts next to the .exe (else it falls back to Tahoma).
+      - name: Add the fonts
+        run: |
+          New-Item -ItemType Directory -Force pc-port/out/launcher/assets | Out-Null
+          Copy-Item -Recurse pc-port/launcher/assets/fonts pc-port/out/launcher/assets/
       - uses: actions/upload-artifact@v6
         with:
           name: launcher
-          path: pc-port/out/launcher/Ghost of Tsushima Launcher.exe
+          path: pc-port/out/launcher/
+          if-no-files-found: error
