@@ -83,9 +83,9 @@ public:
     void FlushBarriers();
 
     /// DMA (shaders that read or write guest memory through the page table, not a binding):
-    /// their accesses are not ranges. A dispatch that reads that way waits for every write
-    /// recorded so far (writing: for every access); after one that writes, every buffer is
-    /// written until the next flush.
+    /// their accesses are not ranges. A dispatch that writes that way waits for every access
+    /// recorded so far (DmaNeedsBarrier(true); false: for every write), and after it every
+    /// buffer counts as written until the next flush.
     [[nodiscard]] bool DmaNeedsBarrier(bool dma_writes) const noexcept {
         return dma_writes ? bool(memory_barrier.srcStageMask)
                           : bool(memory_barrier.srcAccessMask);

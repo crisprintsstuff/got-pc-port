@@ -137,7 +137,11 @@ dumped SPIR-V file from 2026-10-20 and is not part of this work.
    through DMA (`Info::ReadConstType::DmaWrites`, set for `WriteConstDynamic`),
    `Runtime::AccessDmaWrites` makes every later `IsBufferAccessed` true until the next flush
    (`DmaBarrierBefore` / `DmaAccessAfter` in `vk_rasterizer.cpp`). `ShaderBinaryVersion` 16.
-   Not built yet. The user has a save past the cutscene now (load it from the menu).
+   The user has a save past the cutscene now (load it from the menu).
+   Built and run: no more black patches, but 2 FPS (`UNIFIED_STATS` 10-12 frames per interval,
+   37 before): the barrier before every DMA reader (most dispatches, DMA being on by default)
+   cost it. Now only dispatches that write through DMA are ordered (`ISS_DMA_BARRIERS=0` turns
+   it off). No shader change. Not built yet.
 2. `b5500bd4` still binds one buffer it picks at run time with 0 bytes
    (`BindBuffers: Clamped size ... to 0 for stage 0xb5500bd4`; its V# comes from a Phi,
    `Sharp dword N comes from Phi`). DMA fixed the hang, but whatever that buffer feeds may be

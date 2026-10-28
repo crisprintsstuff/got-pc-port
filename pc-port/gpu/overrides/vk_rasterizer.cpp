@@ -135,16 +135,24 @@ namespace {
 // b5500bd4 and bdfc491f read and write the frame's buffers that way and the beach showed black
 // patches that followed the camera, in different spots every frame: those dispatches ran
 // unordered with the passes before and after them.
+// Only the shaders that write through DMA are ordered: the first version also flushed before
+// every DMA reader (with DMA on by default, most dispatches read constants through it) and the
+// beach dropped from 7.5 to 2 FPS. ISS_DMA_BARRIERS=0 turns the ordering off.
 bool WritesThroughDma(const Shader::Info& cs) {
-    return True(cs.readconst_types & Shader::Info::ReadConstType::DmaWrites);
+    static const bool enabled = [] {
+        const char* v = std::getenv("ISS_DMA_BARRIERS");
+        return !v || *v != '0';
+    }();
+    return enabled && cs.uses_dma &&
+           True(cs.readconst_types & Shader::Info::ReadConstType::DmaWrites);
 }
 void DmaBarrierBefore(Runtime& rt, const Shader::Info& cs) {
-    if (cs.uses_dma && rt.DmaNeedsBarrier(WritesThroughDma(cs))) {
+    if (WritesThroughDma(cs) && rt.DmaNeedsBarrier(true)) {
         rt.FlushBarriers();
     }
 }
 void DmaAccessAfter(Runtime& rt, const Shader::Info& cs) {
-    if (cs.uses_dma && WritesThroughDma(cs)) {
+    if (WritesThroughDma(cs)) {
         rt.AccessDmaWrites(vk::PipelineStageFlagBits2::eComputeShader);
     }
 }
