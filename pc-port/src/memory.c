@@ -18,7 +18,11 @@ typedef struct {uint64_t address,size;unsigned char *shadow;uint32_t permissions
 static Mapping mappings[4096];
 static unsigned mapping_count;
 static uint64_t mapping_epoch=1;
+// Bumped when a mapping is removed or its table slot reused (memory_unmap): the per-thread
+// lookup caches below drop what they remembered. Read without the lock.
+static volatile uint64_t mapping_generation=1;
 static void (*map_hook)(uint64_t,uint64_t,uint8_t *);
+static void (*unmap_hook)(uint64_t,uint64_t);
 
 static uint64_t round_up(uint64_t value, uint64_t alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
@@ -53,8 +57,13 @@ static int ensure_backing(void) {
     return backing != NULL && physical_shadow != NULL;
 }
 static void register_mapping_locked(uint64_t address,uint64_t size,unsigned char *shadow,uint32_t permissions){
-    if(mapping_count==4096){fputs("Mapping table exhausted\n",stderr);ExitProcess(23);}
-    mappings[mapping_count++]=(Mapping){address,size,shadow,permissions};
+    // A slot freed by memory_unmap (size 0) is reused first: the game streams textures through
+    // 64 KiB mappings it maps and unmaps all the time.
+    unsigned slot=mapping_count;
+    for(unsigned i=0;i<mapping_count;++i)if(!mappings[i].size){slot=i;break;}
+    if(slot==4096){fputs("Mapping table exhausted\n",stderr);ExitProcess(23);}
+    mappings[slot]=(Mapping){address,size,shadow,permissions};
+    if(slot==mapping_count)++mapping_count;else ++mapping_generation;
     ++mapping_epoch;
 }
 static void register_mapping(uint64_t address,uint64_t size,unsigned char *shadow,uint32_t permissions){
@@ -83,24 +92,25 @@ void memory_register_image(uint64_t offset,uint64_t size,uint32_t flags){
     register_mapping((uintptr_t)image_guest+offset,size,image_shadow+offset,permissions);
 }
 uint8_t *memory_backing(uint64_t address,uint64_t size){
-    // Mappings are append-only. A positive first-match range remains valid
-    // after later registrations, so sequential sparse copies can avoid a
+    // A positive first-match range remains valid after later registrations
+    // (removals bump mapping_generation), so sequential sparse copies can avoid a
     // lock and a linear scan for every 16 KiB page. Bound the cached range
     // before any earlier registration that starts inside it, preserving the
     // original first-match rule even when mappings overlap.
-    typedef struct {uint64_t start,end;uint8_t *shadow;} BackingCache;
+    typedef struct {uint64_t start,end,generation;uint8_t *shadow;} BackingCache;
     static __declspec(thread) BackingCache cache;
-    if(size&&address>=cache.start&&address<cache.end&&size<=cache.end-address)
+    if(size&&cache.generation==mapping_generation&&address>=cache.start&&address<cache.end&&size<=cache.end-address)
         return cache.shadow+(address-cache.start);
+    const uint64_t generation=mapping_generation;
     uint8_t *p=NULL;AcquireSRWLockShared(&memory_lock);
     for(unsigned i=0;i<mapping_count;++i){Mapping *m=&mappings[i];
-        if(address>=m->address&&address-m->address<=m->size&&size<=m->size-(address-m->address)){
+        if(m->size&&address>=m->address&&address-m->address<=m->size&&size<=m->size-(address-m->address)){
             p=m->shadow+(address-m->address);
             uint64_t end=m->address+m->size;
             for(unsigned prior=0;prior<i;++prior)
                 if(mappings[prior].address>address&&mappings[prior].address<end)
                     end=mappings[prior].address;
-            cache=(BackingCache){address,end,p};
+            cache=(BackingCache){address,end,generation,p};
             break;
         }}
     ReleaseSRWLockShared(&memory_lock);return p;
@@ -108,7 +118,7 @@ uint8_t *memory_backing(uint64_t address,uint64_t size){
 // Mapping index (ISS_MAPPING_INDEX=1): per thread, the mappings sorted by address, rebuilt when the
 // append-only table grew; looked up without the lock by binary search. Only used while no two
 // mappings overlap, so the containing mapping is the one the linear scan finds first.
-typedef struct {unsigned count,usable;uint64_t start[4096],end[4096];} MappingIndex;
+typedef struct {unsigned count,usable;uint64_t generation,start[4096],end[4096];} MappingIndex;
 static int index_order(const void *a,const void *b){
     const uint64_t x=((const uint64_t *)a)[0],y=((const uint64_t *)b)[0];return x<y?-1:x>y;
 }
@@ -119,10 +129,10 @@ static int mapping_index_find(uint64_t address,uint64_t *available){
     if(enabled<0)return 0;
     const unsigned count=*(volatile unsigned *)&mapping_count;
     if(!index){index=calloc(1,sizeof(*index));if(!index){enabled=-1;return 0;}}
-    if(index->count!=count){
+    if(index->count!=count||index->generation!=mapping_generation){
         static __declspec(thread) uint64_t pairs[4096][2];
         AcquireSRWLockShared(&memory_lock);
-        const unsigned n=mapping_count;
+        const unsigned n=mapping_count;index->generation=mapping_generation;
         for(unsigned i=0;i<n;++i){pairs[i][0]=mappings[i].address;pairs[i][1]=mappings[i].address+mappings[i].size;}
         ReleaseSRWLockShared(&memory_lock);
         qsort(pairs,n,sizeof(pairs[0]),index_order);
@@ -140,11 +150,13 @@ static int mapping_index_find(uint64_t address,uint64_t *available){
     return 1;
 }
 uint64_t memory_clamp(uint64_t address,uint64_t size){
-    // The mapping table is append-only. An exact-address hit for the first
-    // containing mapping cannot change when later entries are appended. Never
-    // cache misses. Add invalidation here before implementing unmap/replacement.
+    // An exact-address hit for the first containing mapping cannot change when
+    // entries are appended; unmap and slot reuse bump mapping_generation, which
+    // empties this cache. Never cache misses.
     typedef struct {uint64_t address,available;} ClampEntry;
     static __declspec(thread) ClampEntry cache[1024];
+    static __declspec(thread) uint64_t cache_generation;
+    if(cache_generation!=mapping_generation){memset(cache,0,sizeof(cache));cache_generation=mapping_generation;}
     static __declspec(thread) int enabled;
     static __declspec(thread) int cache_first;
     if(!cache_first){char value[8]={0};GetEnvironmentVariableA("ISS_CLAMP_CACHE_FIRST",value,sizeof(value));cache_first=value[0]=='1'?1:-1;}
@@ -162,16 +174,17 @@ uint64_t memory_clamp(uint64_t address,uint64_t size){
         }
     }
     uint64_t n=0;AcquireSRWLockShared(&memory_lock);
-    for(unsigned i=0;i<mapping_count;++i){Mapping *m=&mappings[i];if(address>=m->address&&address-m->address<m->size){n=m->size-(address-m->address);break;}}
+    for(unsigned i=0;i<mapping_count;++i){Mapping *m=&mappings[i];if(m->size&&address>=m->address&&address-m->address<m->size){n=m->size-(address-m->address);break;}}
     ReleaseSRWLockShared(&memory_lock);
     if(enabled>0&&n)*entry=(ClampEntry){address,n};
     return n<size?n:size;
 }
 void memory_visit(void (*visit)(uint64_t,uint64_t,uint8_t *)){
     Mapping snapshot[4096];unsigned count;AcquireSRWLockShared(&memory_lock);count=mapping_count;memcpy(snapshot,mappings,count*sizeof(Mapping));ReleaseSRWLockShared(&memory_lock);
-    for(unsigned i=0;i<count;++i)visit(snapshot[i].address,snapshot[i].size,snapshot[i].shadow);
+    for(unsigned i=0;i<count;++i)if(snapshot[i].size)visit(snapshot[i].address,snapshot[i].size,snapshot[i].shadow);
 }
 void memory_set_map_hook(void (*hook)(uint64_t,uint64_t,uint8_t *)){AcquireSRWLockExclusive(&memory_lock);map_hook=hook;ReleaseSRWLockExclusive(&memory_lock);}
+void memory_set_unmap_hook(void (*hook)(uint64_t,uint64_t)){AcquireSRWLockExclusive(&memory_lock);unmap_hook=hook;ReleaseSRWLockExclusive(&memory_lock);}
 // The GPU tracks ranges that can span neighbouring mappings. In the arena each mapping is its own
 // view and VirtualProtect cannot cross views, so each committed region is protected on its own;
 // placeholders and free gaps between mappings have nothing to protect.
@@ -185,7 +198,7 @@ int memory_gpu_protect(uint64_t address,uint64_t size,uint32_t permissions){
         if(info.State==MEM_COMMIT){
             uint32_t executable=0;DWORD old;
             AcquireSRWLockShared(&memory_lock);
-            for(unsigned i=0;i<mapping_count;++i)if(at>=mappings[i].address&&at-mappings[i].address<mappings[i].size){executable=mappings[i].permissions&4;break;}
+            for(unsigned i=0;i<mapping_count;++i)if(mappings[i].size&&at>=mappings[i].address&&at-mappings[i].address<mappings[i].size){executable=mappings[i].permissions&4;break;}
             ReleaseSRWLockShared(&memory_lock);
             DWORD mode=(permissions&2)?PAGE_READWRITE:(permissions&1)?PAGE_READONLY:PAGE_NOACCESS;
             if(executable)mode=(permissions&2)?PAGE_EXECUTE_READWRITE:PAGE_EXECUTE_READ;
@@ -243,8 +256,9 @@ int32_t GUEST_ABI memory_allocate_direct(int64_t start, int64_t end, uint64_t le
 // placeholders and every mapping is split out of one at page granularity and replaced by a view
 // with MapViewOfFile3 (Windows 10 1803+). Windows already has thread stacks and heaps at random
 // places in the range, so each free stretch of it becomes its own placeholder region; a mapping
-// stays inside one region. Called with memory_lock held. Mappings never leave the arena (unmap
-// keeps them), so the used list only grows.
+// stays inside one region. Called with memory_lock held. memory_unmap gives a mapping's range
+// back: its view becomes a placeholder again, merged with the free placeholders around it, so
+// every free gap between used ranges stays one placeholder (arena_map splits from it).
 #define ARENA_START UINT64_C(0x400000000)   // 16 GiB
 #define ARENA_END UINT64_C(0x10000000000)   // 1 TiB, inside the GPU's 40-bit range
 #ifndef MEM_RESERVE_PLACEHOLDER
@@ -258,7 +272,9 @@ int32_t GUEST_ABI memory_allocate_direct(int64_t start, int64_t end, uint64_t le
 #endif
 typedef void *(WINAPI *VirtualAlloc2Fn)(HANDLE, void *, SIZE_T, ULONG, ULONG, void *, ULONG);
 typedef void *(WINAPI *MapViewOfFile3Fn)(HANDLE, HANDLE, void *, ULONG64, SIZE_T, ULONG, ULONG, void *, ULONG);
+typedef BOOL (WINAPI *UnmapViewOfFile2Fn)(HANDLE, void *, ULONG);
 static MapViewOfFile3Fn map_view3;
+static UnmapViewOfFile2Fn unmap_view2;
 static int arena_state; // 0 untried, 1 reserved, -1 unavailable
 typedef struct { uint64_t start, end; } Range;
 static Range arena_regions[256], arena_used[16384];
@@ -268,6 +284,7 @@ static int arena_available(void) {
     HMODULE base = GetModuleHandleW(L"kernelbase.dll");
     VirtualAlloc2Fn alloc2 = base ? (VirtualAlloc2Fn)(void *)GetProcAddress(base, "VirtualAlloc2") : NULL;
     map_view3 = base ? (MapViewOfFile3Fn)(void *)GetProcAddress(base, "MapViewOfFile3") : NULL;
+    unmap_view2 = base ? (UnmapViewOfFile2Fn)(void *)GetProcAddress(base, "UnmapViewOfFile2") : NULL;
     uint64_t reserved = 0; DWORD failure = 0;
     for (uint64_t at = ARENA_START; alloc2 && map_view3 && at < ARENA_END && region_count < 256;) {
         MEMORY_BASIC_INFORMATION info;
@@ -334,6 +351,25 @@ static void *arena_map(HANDLE section, uint64_t offset, uint64_t start, uint64_t
     arena_used[i] = (Range){start, start + length};
     ++arena_count;
     return view;
+}
+#ifndef MEM_COALESCE_PLACEHOLDERS
+#define MEM_COALESCE_PLACEHOLDERS 0x00000001
+#endif
+// Gives [start, start+length) back to the arena: the view becomes a placeholder again and is
+// merged with the free placeholders next to it. Only a range arena_map made, exactly.
+static int arena_unmap(uint64_t start, uint64_t length) {
+    unsigned i = arena_index(start);
+    if (i == arena_count || arena_used[i].start != start || arena_used[i].end != start + length || !unmap_view2) return 0;
+    const Range *region = arena_region(start, length);
+    if (!region || !unmap_view2(GetCurrentProcess(), (void *)(uintptr_t)start, MEM_PRESERVE_PLACEHOLDER)) return 0;
+    memmove(&arena_used[i], &arena_used[i + 1], (arena_count - i - 1) * sizeof(*arena_used));
+    --arena_count;
+    uint64_t gap_start = i && arena_used[i - 1].end > region->start ? arena_used[i - 1].end : region->start;
+    uint64_t gap_end = i < arena_count && arena_used[i].start < region->end ? arena_used[i].start : region->end;
+    // Fails harmlessly when the range is the whole gap (nothing to merge).
+    if (gap_start != start || gap_end != start + length)
+        VirtualFree((void *)(uintptr_t)gap_start, (SIZE_T)(gap_end - gap_start), MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS);
+    return 1;
 }
 static int32_t map_failed(const char *kind, uint64_t requested, uint64_t length, int32_t flags, int32_t result) {
     printf("%s mapping failed: hint=0x%llx bytes=%llu flags=0x%x winerror=%lu\n", kind, (unsigned long long)requested,
@@ -502,13 +538,38 @@ int32_t GUEST_ABI memory_release_direct(int64_t start,uint64_t length){
     }
     ReleaseSRWLockExclusive(&memory_lock);return result;
 }
-// The mapping table is append-only (see memory_clamp), so an unmap keeps the view mapped and
-// logs; a later fixed mapping at that address will fail visibly.
+// Unmap removes every mapping wholly inside the range from the table and gives its arena range
+// back, so a later fixed mapping there succeeds. Ghost of Tsushima streams textures through
+// 64 KiB mappings it unmaps and maps again at the same addresses; with unmap a no-op the fixed
+// remap failed ("Direct mapping failed: hint=0x1428990000") and the file reader then wrote into
+// the unmapped page (exit code 21 at 0x1420d70000, 2026-10-28). The GPU is told first, while
+// the pages are still mapped. Mappings outside the arena (no placeholder API) stay as before.
 int32_t GUEST_ABI memory_unmap(void *address,uint64_t length){
     static volatile LONG reported;
     if(!length)return ERR_INVALID;
-    if(InterlockedIncrement(&reported)<=16)
-        printf("Unmap not implemented, range kept: virtual=0x%llx bytes=%llu\n",(unsigned long long)(uintptr_t)address,(unsigned long long)length);
+    const uint64_t start=(uintptr_t)address,end=start+length<start?UINT64_MAX:start+length;
+    for(;;){
+        uint64_t at=0,size=0;
+        AcquireSRWLockShared(&memory_lock);
+        for(unsigned i=0;i<mapping_count;++i){Mapping *m=&mappings[i];
+            if(m->size&&m->address>=start&&m->address+m->size<=end&&arena_count&&
+               arena_index(m->address)<arena_count&&arena_used[arena_index(m->address)].start==m->address){at=m->address;size=m->size;break;}}
+        void (*hook)(uint64_t,uint64_t)=unmap_hook;
+        ReleaseSRWLockShared(&memory_lock);
+        if(!size)break;
+        if(hook)hook(at,size);
+        AcquireSRWLockExclusive(&memory_lock);
+        int removed=0;
+        for(unsigned i=0;i<mapping_count;++i)if(mappings[i].size&&mappings[i].address==at&&mappings[i].size==size){
+            if(arena_unmap(at,size)){mappings[i]=(Mapping){0,0,NULL,0};removed=1;++mapping_epoch;++mapping_generation;}
+            break;}
+        ReleaseSRWLockExclusive(&memory_lock);
+        if(!removed){
+            if(InterlockedIncrement(&reported)<=16)
+                printf("Unmap failed, range kept: virtual=0x%llx bytes=%llu winerror=%lu\n",(unsigned long long)at,(unsigned long long)size,GetLastError());
+            break;
+        }
+    }
     return 0;
 }
 // SceKernelBatchMapEntry.

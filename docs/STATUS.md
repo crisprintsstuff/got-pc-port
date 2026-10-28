@@ -37,6 +37,16 @@ Results (opening cutscene, `-Profile`): fault window 64 KB: 11.7 FPS (protect 95
 faults 12, readbacks 0.01 MB), but it crashed after the settings screens. Unified
 `0x1100000000:0x14c00000`: 15 FPS, also crashed there. `run_game.ps1` now sets
 `ISS_FAULT_WINDOW_KB=64`. Next: the crash with unified memory on `0x1500000000`.
+That crash (rerun, reached the cutscene, then 4 FPS and exit 21): the file reader (FaWorkerIo1,
+memcpy in VCRUNTIME140) wrote into `0x1420d70000`, which was never mapped. The game streams
+textures through 64 KiB direct mappings in `0x14xxxxxxxx` that it unmaps and maps again;
+`memory_unmap` was a no-op ("Unmap not implemented, range kept"), so a fixed remap at a freed
+address failed (`Direct mapping failed: hint=0x1428990000`). Not caused by unified memory: the
+slow runs never got that far. Fix on `irq-burst-merge`: real unmap for arena mappings
+(`src/memory.c`: the view goes back to a placeholder merged with its free neighbours, the table
+slot is freed and reused, per-thread lookup caches follow `mapping_generation`), and the GPU is
+told first (`iss_gpu_unmap` -> `Rasterizer::UnmapMemory`, `AddressSpace::Unregister`). Test in
+`tests/runtime_test.c` (unmap, then a fixed map at the same address).
 title screen renders at ~13 FPS, no `DEVICE LOST`. So `b5500bd4` is confirmed as the GPU hang.
 Its effect is missing while skipped. Second run: after the spinner, right after the first
 `SKIP_CS` line and `Created native guest thread: GameState`, three threads (job workers, chain

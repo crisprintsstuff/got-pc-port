@@ -25,6 +25,7 @@ int iss_gpu_initialize(const IssGpuCallbacks *callbacks);
 uintptr_t iss_gpu_resolve(const char *identity);
 int iss_gpu_fault(void *exception_pointers,void *address);
 void iss_gpu_map(uint64_t address,uint64_t size,uint8_t *backing);
+void iss_gpu_unmap(uint64_t address,uint64_t size);
 int iss_gpu_readback(uint64_t address,uint64_t size);
 /* The runtime is about to write [address, address+size) of guest memory from a host thread (file
    reads): the GPU tracking of the whole range is invalidated at once, as its page faults would

@@ -43,7 +43,7 @@ def optimization_options(lto='none',cpu='generic',jobs=4):
 def link_command(objects,libraries,dll_output,link_flags):
     command=[str(CLANG),'/LD','/clang:-fuse-ld=lld',*[str(p) for p in objects],*libraries,
              f'/Fe:{dll_output}','/link','/INCREMENTAL:NO','/DYNAMICBASE','/NXCOMPAT',
-             '/EXPORT:iss_gpu_initialize','/EXPORT:iss_gpu_resolve','/EXPORT:iss_gpu_fault','/EXPORT:iss_gpu_map','/EXPORT:iss_gpu_readback','/EXPORT:iss_gpu_invalidate',
+             '/EXPORT:iss_gpu_initialize','/EXPORT:iss_gpu_resolve','/EXPORT:iss_gpu_fault','/EXPORT:iss_gpu_map','/EXPORT:iss_gpu_unmap','/EXPORT:iss_gpu_readback','/EXPORT:iss_gpu_invalidate',
              '/EXPORT:iss_gpu_feedback_identity','/EXPORT:iss_gpu_file_opened',*link_flags]
     command.append('/MAP:'+str(dll_output.with_suffix('.map')))
     return command
