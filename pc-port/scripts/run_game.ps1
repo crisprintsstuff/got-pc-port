@@ -24,7 +24,9 @@ $env:ISS_HANG_DUMP_REG = $DumpReg
 $env:ISS_TRACE_MSPACE = if ($TraceMspace) { "1" } else { "" }
 $env:ISS_IRQ_LOG = if ($IrqLog) { "1" } else { "" }
 $env:SHADPS4_FRAME_CSV = Join-Path $root "frames.csv"
-$env:ISS_GPU_PROFILE = if ($Profile) { "1" } else { "" }
+# -Profile: GPU timestamps; ISS_GPU_PROFILE=2 set beforehand also times each compute shader
+# ("Perf GPU compute shader" lines in run.log every 5 s).
+$env:ISS_GPU_PROFILE = if ($Profile) { if ($env:ISS_GPU_PROFILE -eq "2") { "2" } else { "1" } } else { "" }
 Get-Process iss-probe -ErrorAction SilentlyContinue | Stop-Process
 if ($HangReport -gt 0) { Remove-Item (Join-Path $out "hang-report.txt") -ErrorAction SilentlyContinue }
 Write-Host "Game folder: $env:ISS_GAME_DIR"
