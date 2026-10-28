@@ -5,9 +5,9 @@ next step is. Newest state first; keep the history short.
 
 ## Where the game stops
 
-The game boots, presents frames and loads its title data (`ghost_title.xpps`, `game.sprig.xpps`).
-It then usually stops on a black screen. One run got past that to the loading spinner, then hit a
-GPU hang. Nothing playable is drawn yet.
+The game boots, presents frames, loads its title data and shows the loading spinner (with
+`asc-irq-coalesce`, which fixed the black-screen deadlock). About 40 s in, the GPU hangs on the
+loading-screen draw `ps 361a48f5`. Nothing playable is drawn yet.
 
 Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 dump, repo at
 `C:\Users\cuboi\Documents\GOT-port\got-pc-port`.
@@ -18,8 +18,9 @@ Each branch contains the one before it. Test the top one.
 
 | Branch | Fix | State |
 | --- | --- | --- |
-| `asc-irq-coalesce` | Black-screen deadlock: merge a delayed compute interrupt into one already pending for the same equeue event (`gpu/overrides/gnmdriver.cpp`, `IrqDelayer::Push`) | Pushed, **not built or run yet** |
-| `wave32-readlane` | GPU hang on NVIDIA: `v_readlane` of lanes 32-63 outside compute shaders reads the same lane within the host subgroup (`gpu/overrides/recompiler.cpp`, `ClampReadLanesToSubgroup`); `ShaderBinaryVersion` 9 | Pushed, built; **not yet exercised** (no run has reached the shader since) |
+| `wave32-inactive-lanes` | GPU hang on `ps 361a48f5`, second cause: shuffles and lane reads of inactive lanes outside compute shaders fall back to the lane's own value / the first active lane's (`GuardLaneReadsToActiveLanes`); `ShaderBinaryVersion` 10 | Pushed, **not built or run yet** |
+| `asc-irq-coalesce` | Black-screen deadlock: merge a delayed compute interrupt into one already pending for the same equeue event (`gpu/overrides/gnmdriver.cpp`, `IrqDelayer::Push`) | Built and run: **fixed** (spinner reached, main thread no longer stuck) |
+| `wave32-readlane` | GPU hang on NVIDIA, first cause: `v_readlane` of lanes 32-63 outside compute shaders reads the same lane within the host subgroup (`gpu/overrides/recompiler.cpp`, `ClampReadLanesToSubgroup`); `ShaderBinaryVersion` 9 | Built and run: needed but **not enough**, same draw still hangs |
 
 Merged: #1 launcher text and `.pkg` message, #2 launcher CI, #3 launcher warnings, #4 CI action
 versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
@@ -29,15 +30,19 @@ versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
 
 ## Next step
 
-Build `asc-irq-coalesce` (`python pc-port/scripts/build_gpu.py --jobs 12`), then run 2-3 times,
-since the deadlock was intermittent:
+Build `wave32-inactive-lanes` (`python pc-port/scripts/build_gpu.py --jobs 12`) and run it twice:
+the first run recompiles every shader (version 10), so judge the second.
 
-    .\pc-port\scripts\run_game.ps1 -HangReport 40 -IrqLog -Dump "+0x3bb64e0:0x20"
+    .\pc-port\scripts\run_game.ps1 -HangReport 40
 
-- **Past the black screen:** the deadlock is fixed. Watch the loading spinner: that is where the
-  readlane fix gets tested (draw `ps 361a48f5`). Open PRs for both branches.
-- **Still black:** read the node dump (`+0x3bb64e0`, see below) and the `GNM_IRQ_MERGED` lines
-  in `run.log`.
+- **Past the spinner with no `DEVICE LOST`:** open PRs for the three branches (stacked:
+  `wave32-readlane` <- `asc-irq-coalesce` <- `wave32-inactive-lanes`).
+- **`DEVICE LOST` on `ps 361a48f5` again:** get its new cached SPIR-V
+  (`pc-port\out\user\gpu-14\CUSA11456\0x00000000361a48f5_0.spv`) and check the loop with
+  `spirv-dis`: the broadcasts should read lane 31, and every shuffle should be wrapped in a
+  ballot select.
+- **Black screen again:** the deadlock is intermittent; read the node dump
+  (`-Dump "+0x3bb64e0:0x20"`) and `GNM_IRQ_MERGED` in an `-IrqLog` run.
 
 ## Findings
 
@@ -81,8 +86,11 @@ Addresses are image offsets in the patch 2.18 eboot (`+0x...` in hang reports).
 also samples. The pixel shader's only loop takes a wave minimum with `ShuffleXor` 16/8/4/2/1 and
 `OpGroupNonUniformBroadcast` of lanes 31 and 63, and exits when the minimum reaches 255. Lane 63
 does not exist in a 32-lane subgroup, so the loop never ended. shadPS4's `LowerWave64BallotPass`
-only rewrites compute shaders. If the hang returns on the same draw, the next suspect is lanes
-the GPU did not launch (inactive lanes read by the shuffles).
+only rewrites compute shaders. With that fixed (lane 31), the same draw still hung after 40 s
+(2026-10-28 run). Second cause: along the odd 513-pixel edge, partial quads and warps leave
+source lanes inactive, and Vulkan leaves shuffles and broadcasts from them undefined; a stale
+value below 255 keeps the minimum there. On the PS4 the game's code can mask those lanes off,
+which shadPS4's translation cannot express. Fix on `wave32-inactive-lanes`.
 
 ### Crash "GPU protection failed" (fixed, #5)
 
