@@ -6,6 +6,13 @@ next step is. Newest state first; keep the history short.
 ## Where the game stops
 
 **Title screen reached** (2026-10-28, `skip-cs-diagnostic` with `ISS_SKIP_CS=b5500bd4`): the mask
+
+**In the game world** (2026-10-28, `irq-burst-merge` with `ISS_ASC_SEL3_IRQ=0`, DMA on,
+`ISS_WATCH` on): past the title screen into the game, about 7 FPS, text in Portuguese. Now the
+defaults: compute INT_SEL 3 raises no interrupt (`ISS_ASC_SEL3_IRQ=1` restores it) and the
+system language is English (`ISS_LANGUAGE`, it was 17 = Brazilian Portuguese from inFAMOUS).
+Open: whether DMA (`BB_DIRECT_MEMORY_ACCESS=1`) is needed for `b5500bd4`, and the frame rate
+(watchpoints and the disabled shader cache slow it down).
 title screen renders at ~13 FPS, no `DEVICE LOST`. So `b5500bd4` is confirmed as the GPU hang.
 Its effect is missing while skipped. Second run: after the spinner, right after the first
 `SKIP_CS` line and `Created native guest thread: GameState`, three threads (job workers, chain

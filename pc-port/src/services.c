@@ -64,10 +64,12 @@ static int32_t GUEST_ABI user_initial(int32_t *id){if(!id)return (int32_t)UINT32
 static int32_t GUEST_ABI user_list(int32_t *ids){if(!ids)return (int32_t)UINT32_C(0x80960005);ids[0]=1;ids[1]=ids[2]=ids[3]=-1;return 0;}
 static int32_t GUEST_ABI user_event(int32_t *e){if(!e)return (int32_t)UINT32_C(0x80960005);if(!InterlockedExchange((volatile LONG *)&login_pending,0))return (int32_t)UINT32_C(0x80960007);e[0]=0;e[1]=1;return 0;}
 // The system language (SCE_SYSTEM_SERVICE_PARAM_ID_LANG): ISS_LANGUAGE=<PS4 language id, 0-30>,
-// set by the launcher from the languages of the CUSA00004 package; 17 when unset.
+// set by the launcher from the languages of the CUSA11456 package; English (1) when unset. The
+// inFAMOUS default was 17 (Brazilian Portuguese): run_game.ps1 sets no language, and Ghost of
+// Tsushima came up in Portuguese.
 static int32_t system_language(void){
     const char *s=getenv("ISS_LANGUAGE");char *end;long id=s?strtol(s,&end,10):-1;
-    return s&&*s&&!*end&&id>=0&&id<=30?(int32_t)id:17;
+    return s&&*s&&!*end&&id>=0&&id<=30?(int32_t)id:1;
 }
 static int32_t GUEST_ABI system_param(int id,int32_t *out){
     if(!out)return (int32_t)UINT32_C(0x80a10003);

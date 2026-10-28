@@ -3454,16 +3454,18 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     FIBER_EXIT;
 }
 
-// ISS_ASC_SEL3_IRQ=0 (test): a compute RELEASE_MEM with INT_SEL 3 writes its label without
-// raising the pipe interrupt. Every compute RELEASE_MEM Ghost of Tsushima sends uses INT_SEL 3
+// A compute RELEASE_MEM with INT_SEL 3 writes its label without raising the pipe interrupt
+// (ISS_ASC_SEL3_IRQ=1 raises it, as shadPS4 does). Every compute RELEASE_MEM Ghost of Tsushima
+// sends uses INT_SEL 3
 // and its graphics EOPs use 0 or 2, never 3; on later AMD GPUs 3 is "send data after write
 // confirm", no interrupt. Raising one per label woke ProxySetSync (event 6) at the end of every
 // frame, and it signalled the frame countdown in frames where the main thread signals it itself
 // (flag at +0x3bb6570 clear, +0x8b4202), so the next frame was released early (exit code 21).
+// Without the interrupt the game got past the title screen into the world (2026-10-28).
 static bool ComputeIrq(InterruptSelect sel) {
     static const bool sel3 = [] {
         const char* v = std::getenv("ISS_ASC_SEL3_IRQ");
-        return !(v && v[0] == '0');
+        return v && v[0] == '1';
     }();
     return sel != InterruptSelect::None && (sel != InterruptSelect::IrqUndocumented || sel3);
 }
