@@ -12,16 +12,20 @@ world load and stops at an assertion in the renderer:
     liverpool_to_vk.cpp:788 SurfaceFormat: Assertion Failed!
     Unknown data_format=39 and num_format=11
 
-(while loading `tsu_0_-8_-15.xpps`, right after compiling `fs c269e87e` / `vs 84de8c8e`). A surface
-format missing from shadPS4's table (`SurfaceFormats()` in `liverpool_to_vk.cpp`). **Next fix.**
-Nothing playable is drawn yet.
+(while loading `tsu_0_-8_-15.xpps`). Format 39 is BC5 and number format 11 is `UbnormNz`, which
+shadPS4's `RemapNumberFormat` does not turn into `Unorm` as it does `Ubnorm`. Fix on
+`bc5-ubnorm-nz`, **not built or run yet**. Nothing playable is drawn yet.
 
 Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 dump, repo at
 `C:\Users\cuboi\Documents\GOT-port\got-pc-port`.
 
-## Open branches, in order of the fix stack
+## Open branches
 
-Each branch contains the one before it. Test the top one.
+| Branch | Fix | State |
+| --- | --- | --- |
+| `bc5-ubnorm-nz` (from `main`) | `UbnormNz` remapped to `Unorm` with the `UnormToUbnorm` conversion, like `Ubnorm`, in a shim copy of `video_core/amdgpu/pixel_format.h` (`gpu/shim` shadows shadPS4 headers) | Pushed, **not built or run yet** |
+
+Merged 2026-10-28 (#8-#11, in this order of the stack):
 
 | Branch | Fix | State |
 | --- | --- | --- |
@@ -38,12 +42,13 @@ versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
 
 ## Next step
 
-Merge the four fix PRs, stacked in this order: `wave32-readlane` <- `asc-irq-coalesce` <-
-`wave32-inactive-lanes` <- `release-mem-irq-only`. Then, on a branch from `main`, add
-`data_format=39, num_format=11` to the surface format table. Look up which GCN format 39 is
-(`AmdGpu::DataFormat` in shadPS4 `video_core/amdgpu/pixel_format.h`), and map it to a Vulkan
-format the NVIDIA card supports. `liverpool_to_vk.cpp` is not a port override yet: add one to
-`overrides` in `scripts/build_gpu.py`, or fall back where `SurfaceFormat` is called.
+Build `bc5-ubnorm-nz` (`python pc-port/scripts/build_gpu.py --jobs 12`; the conversion is part of
+each shader's specialization key, so no `ShaderBinaryVersion` bump and no full recompile) and run:
+
+    .\pc-port\scripts\run_game.ps1 -HangReport 40
+
+and send the end of `run.log`. A crash in a missing shadPS4 case is the likely next stop: each
+fix so far has moved the game further into the world load.
 If the black screen comes back, the deadlock is intermittent: read the node dump
 (`-Dump "+0x3bb64e0:0x20"`) and `GNM_IRQ_MERGED` in an `-IrqLog` run.
 
