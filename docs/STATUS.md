@@ -7,8 +7,12 @@ next step is. Newest state first; keep the history short.
 
 **Title screen reached** (2026-10-28, `skip-cs-diagnostic` with `ISS_SKIP_CS=b5500bd4`): the mask
 title screen renders at ~13 FPS, no `DEVICE LOST`. So `b5500bd4` is confirmed as the GPU hang.
-Its effect is missing while skipped. Next: see what the game does past the title screen, then
-the real bindless fix below.
+Its effect is missing while skipped. Second run: after the spinner, right after the first
+`SKIP_CS` line and `Created native guest thread: GameState`, three threads (job workers, chain
+`+0x8030bc +0x80306e +0x2a1e90 +0x2a162d`) fault at the same instruction, `+0xb64121`
+(access violation, exit code 21; `rcx=0x3f000000` (0.5f), `r14=0x111c9270`, `r15=0x13ce4b20`,
+`r13=0`). Possibly the CPU reading data the skipped shader should have written. Waiting on a
+code dump of `+0xb63f00`. Note: simultaneous faults interleave their `PROBE_EVENT` lines.
 
 Previous runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
 compute shader `b5500bd4` starts running, though its SPIR-V now validates. Its waterfall loop
