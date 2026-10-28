@@ -10,10 +10,10 @@ and its T# dwords 0-3 **come from Phi**, not `ReadFirstLane` (`Sharp dword N com
 descriptor is chosen in a loop or branch, the shape of a waterfall loop over per-lane textures.
 The logged skip let it compile; 9.5 s later the GPU hung (`DEVICE LOST`, no graphics command in
 flight, so probably a compute queue). The main-thread spin at `+0x709942` seen in the run before
-is likely the CPU waiting on that GPU work. **Next:** the shader's cached SPIR-V
-(`pc-port\out\user\gpu-14\CUSA11456\0x00000000b5500bd4_0.spv`): where the Phi comes from,
-and whether the loop can exit on a 32-lane GPU (compare the `ps 361a48f5` hang in Findings).
-Nothing playable is drawn yet.
+is likely the CPU waiting on that GPU work. Its SPIR-V fails `spirv-val`: two 64-bit `OpBitFieldInsert`s (`S_BITSET0/1_B64`), which
+clear the handled lane's bit of a 64-bit mask in the waterfall loop; Vulkan only allows 32-bit
+ones. Fix on `bitfield-insert64` (`LowerBitFieldInsert64`, `ShaderBinaryVersion` 11),
+**not built or run yet**. Nothing playable is drawn yet.
 
 Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 dump, repo at
 `C:\Users\cuboi\Documents\GOT-port\got-pc-port`.
@@ -22,6 +22,7 @@ Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 d
 
 | Branch | Fix | State |
 | --- | --- | --- |
+| `bitfield-insert64` (on `sharp-source-readfirstlane`) | GPU hang after `b5500bd4`: `BitFieldInsert64` rebuilt from 64-bit shifts, AND and OR (`gpu/overrides/recompiler.cpp`, `LowerBitFieldInsert64`); `ShaderBinaryVersion` 11 | Pushed, **not built or run yet** |
 | `sharp-source-readfirstlane` (on `bc5-ubnorm-nz`) | `IsSharpSource` assertion in `ResourceDiscoverPass`: T#/S# dwords read through `ReadFirstLane` are taken from its source, as V# dwords already were; any other unknown source is logged (`Sharp dword N comes from <opcode>`) and skipped instead of aborting. New override `gpu/overrides/resource_discover_pass.cpp` | Built and run: no abort, but the sources are Phi (not `ReadFirstLane`); the shader then likely hung the GPU |
 | `bc5-ubnorm-nz` (from `main`, PR #13) | `SurfaceFormat` assertion (data_format=39 BC5, num_format=11 `UbnormNz`): `UbnormNz` remapped to `Unorm` with the `UnormToUbnorm` conversion, like `Ubnorm`, in a shim copy of `video_core/amdgpu/pixel_format.h` (`gpu/shim` shadows shadPS4 headers) | Built and run: **fixed** (world tiles load) |
 
@@ -42,13 +43,14 @@ versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
 
 ## Next step
 
-Dump the new wait loop and what it polls:
+Build `bitfield-insert64` (`python pc-port/scripts/build_gpu.py --jobs 12`) and run it twice: the
+first run recompiles every shader (version 11).
 
-    .\pc-port\scripts\run_game.ps1 -HangReport 40 -Dump "+0x7098c0:0x100,+0x10ce4c0:0x40,+0x3bb64e0:0x20"
+    .\pc-port\scripts\run_game.ps1 -HangReport 40
 
-Disassemble `+0x7098c0` (`objdump -D -b binary -mi386:x86-64 --adjust-vma=0x7098c0`), find the
-exit condition and who should satisfy it; the node at `+0x3bb64e0` rules the old deadlock in or
-out (negative count = it is back).
+If the GPU hangs again after `b5500bd4`, check its new cached SPIR-V with
+`spirv-val --target-env vulkan1.3`. It should validate now. Then look at the waterfall loop
+(per-lane T# from Phi): read where the lane mask starts and that it only ever loses bits.
 
 ## Findings
 
