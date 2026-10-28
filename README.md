@@ -24,6 +24,9 @@ instead. The launcher says so when it is given a folder that holds the game's `.
 `eboot.bin`. DLC `.pkg` files are different: the launcher reads only their content ids, to unlock
 the DLC.
 
+Current state, open branches and the next step: [`docs/STATUS.md`](docs/STATUS.md). Working in the
+repo (people or coding agents): [`AGENTS.md`](AGENTS.md).
+
 ## Differences from the inFAMOUS port
 
 - libc: like inFAMOUS, the game's own `sce_module/libc.prx` and `libSceFios2.prx` are linked
