@@ -5,15 +5,17 @@ next step is. Newest state first; keep the history short.
 
 ## Where the game stops
 
-Latest run (`sharp-source-readfirstlane`, 2026-10-28): the game reached compute shader `b5500bd4`
-and its T# dwords 0-3 **come from Phi**, not `ReadFirstLane` (`Sharp dword N comes from Phi`): the
-descriptor is chosen in a loop or branch, the shape of a waterfall loop over per-lane textures.
-The logged skip let it compile; 9.5 s later the GPU hung (`DEVICE LOST`, no graphics command in
-flight, so probably a compute queue). The main-thread spin at `+0x709942` seen in the run before
-is likely the CPU waiting on that GPU work. Its SPIR-V fails `spirv-val`: two 64-bit `OpBitFieldInsert`s (`S_BITSET0/1_B64`), which
-clear the handled lane's bit of a 64-bit mask in the waterfall loop; Vulkan only allows 32-bit
-ones. Fix on `bitfield-insert64` (`LowerBitFieldInsert64`, `ShaderBinaryVersion` 11),
-**not built or run yet**. Nothing playable is drawn yet.
+Latest runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
+compute shader `b5500bd4` starts running, though its SPIR-V now validates. Its waterfall loop
+terminates (it clears the lowest set bit of a 64-bit mask each pass) and its barriers sit in
+loops with uniform trip counts. The new clue: every dispatch logs
+`BindBuffers: Clamped size from 583 to 0 for stage 0xb5500bd4`, so a buffer is bound with 0 bytes
+at an address with no mapping. Its descriptors are chosen at run time from a table inside the
+loop (bindless: `Sharp dword N comes from Phi`), which the recompiler cannot resolve statically.
+Reads from the 0-byte buffer return nothing, and loops counting on that data likely never end.
+Real fix: bindless descriptor support for Phi-sourced sharps in the recompiler (large). **Now:**
+`skip-cs-diagnostic` adds `ISS_SKIP_CS=<hash>` to drop that shader's dispatches, to confirm it
+is the culprit and see what comes after. Nothing playable is drawn yet.
 
 Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 dump, repo at
 `C:\Users\cuboi\Documents\GOT-port\got-pc-port`.
@@ -22,7 +24,8 @@ Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 d
 
 | Branch | Fix | State |
 | --- | --- | --- |
-| `bitfield-insert64` (on `sharp-source-readfirstlane`) | GPU hang after `b5500bd4`: `BitFieldInsert64` rebuilt from 64-bit shifts, AND and OR (`gpu/overrides/recompiler.cpp`, `LowerBitFieldInsert64`); `ShaderBinaryVersion` 11 | Pushed, **not built or run yet** |
+| `skip-cs-diagnostic` (on `bitfield-insert64`) | Diagnostic `ISS_SKIP_CS=<hex hash>[,...]`: drops compute dispatches of those shaders (both dispatch paths in `gpu/overrides/vk_rasterizer.cpp`), logs `SKIP_CS <hash>` once | Pushed, **not built or run yet** |
+| `bitfield-insert64` (on `sharp-source-readfirstlane`) | Invalid 64-bit `OpBitFieldInsert` in `b5500bd4`: `BitFieldInsert64` rebuilt from 64-bit shifts, AND and OR (`gpu/overrides/recompiler.cpp`, `LowerBitFieldInsert64`); `ShaderBinaryVersion` 11 | Built and run: SPIR-V validates now, but the GPU still hangs (see above) |
 | `sharp-source-readfirstlane` (on `bc5-ubnorm-nz`) | `IsSharpSource` assertion in `ResourceDiscoverPass`: T#/S# dwords read through `ReadFirstLane` are taken from its source, as V# dwords already were; any other unknown source is logged (`Sharp dword N comes from <opcode>`) and skipped instead of aborting. New override `gpu/overrides/resource_discover_pass.cpp` | Built and run: no abort, but the sources are Phi (not `ReadFirstLane`); the shader then likely hung the GPU |
 | `bc5-ubnorm-nz` (from `main`, PR #13) | `SurfaceFormat` assertion (data_format=39 BC5, num_format=11 `UbnormNz`): `UbnormNz` remapped to `Unorm` with the `UnormToUbnorm` conversion, like `Ubnorm`, in a shim copy of `video_core/amdgpu/pixel_format.h` (`gpu/shim` shadows shadPS4 headers) | Built and run: **fixed** (world tiles load) |
 
@@ -43,14 +46,16 @@ versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
 
 ## Next step
 
-Build `bitfield-insert64` (`python pc-port/scripts/build_gpu.py --jobs 12`) and run it twice: the
-first run recompiles every shader (version 11).
+Build `skip-cs-diagnostic` and run with the shader dropped:
 
+    $env:ISS_SKIP_CS = "b5500bd4"
     .\pc-port\scripts\run_game.ps1 -HangReport 40
 
-If the GPU hangs again after `b5500bd4`, check its new cached SPIR-V with
-`spirv-val --target-env vulkan1.3`. It should validate now. Then look at the waterfall loop
-(per-lane T# from Phi): read where the lane mask starts and that it only ever loses bits.
+- **No `DEVICE LOST`:** `b5500bd4` is confirmed. Note what the game does next. Then implement the
+  real fix: resolve Phi-sourced sharps (bindless T#/V# from a descriptor table) in
+  `ResourceDiscoverPass` / `FlattenExtendedUserdataPass` / `ResourcePatchingPass`, e.g. by
+  binding the descriptor table as a buffer and building the descriptor in the shader.
+- **Still `DEVICE LOST`:** the hang is elsewhere; read the black box's last commands.
 
 ## Findings
 

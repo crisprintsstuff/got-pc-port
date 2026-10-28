@@ -40,6 +40,7 @@ namespace iss::diagnostics {void RecordFeedbackBinding(u64 address,u64 size,u64 
 #include <array>
 #include <atomic>
 #include <cstdlib>
+#include <mutex>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -2948,6 +2949,40 @@ struct DispatchCycles {
 };
 static DispatchCycles g_dispatch_cycles;
 
+// ISS_SKIP_CS=<hex hash>[,...] (diagnostic, wrong image): compute dispatches of these shaders are
+// dropped, and SKIP_CS logs each hash the first time. Used to confirm which compute shader hangs
+// the GPU: Ghost of Tsushima's b5500bd4 picks its descriptors in a waterfall loop from a table
+// (bindless; ResourceDiscoverPass sees Phi sources) and a buffer of it was bound with 0 bytes
+// ("Clamped size from 583 to 0") before each DEVICE LOST.
+static bool SkipComputeShader(const ComputePipeline& pipeline) {
+    static const std::vector<u64> hashes = [] {
+        std::vector<u64> out;
+        for (const char* s = std::getenv("ISS_SKIP_CS"); s && *s;) {
+            char* end = nullptr;
+            const u64 hash = std::strtoull(s, &end, 16);
+            if (end == s) break;
+            out.push_back(hash);
+            if (*end != ',') break;
+            s = end + 1;
+        }
+        return out;
+    }();
+    if (hashes.empty()) return false;
+    static std::mutex logged_mutex;
+    static std::vector<u64> logged;
+    for (const Shader::Info* stage : pipeline.GetStages()) {
+        if (!stage || std::find(hashes.begin(), hashes.end(), stage->pgm_hash) == hashes.end()) continue;
+        std::scoped_lock lock{logged_mutex};
+        if (std::find(logged.begin(), logged.end(), stage->pgm_hash) == logged.end()) {
+            logged.push_back(stage->pgm_hash);
+            std::fprintf(stderr, "SKIP_CS %llx: its dispatches are dropped (ISS_SKIP_CS)\n",
+                         static_cast<unsigned long long>(stage->pgm_hash));
+        }
+        return true;
+    }
+    return false;
+}
+
 void Rasterizer::DispatchDirect() {
     const iss::cp_path::Scope cp_path_scope{iss::cp_path::Dispatch};
     auto& dc = g_dispatch_cycles;
@@ -2971,6 +3006,10 @@ void Rasterizer::DispatchDirect() {
     const ComputePipeline* pipeline = pipeline_cache.GetComputePipeline(ActiveCpOwner());
     if (dc.active) dc.Mark(1);
     if (!pipeline) {
+        dc.active = false;
+        return;
+    }
+    if (SkipComputeShader(*pipeline)) [[unlikely]] {
         dc.active = false;
         return;
     }
@@ -3112,7 +3151,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
     const auto& cs_program = DrawCsRegs();
     const ComputePipeline* pipeline = pipeline_cache.GetComputePipeline(ActiveCpOwner());
-    if (!pipeline) {
+    if (!pipeline || SkipComputeShader(*pipeline)) {
         return;
     }
     [[maybe_unused]] std::optional<PreparedComputeInputs> prepared;
