@@ -5,17 +5,17 @@ next step is. Newest state first; keep the history short.
 
 ## Where the game stops
 
-With `bc5-ubnorm-nz` the game loads the world tiles and character textures (`hero_samurai_*`,
-`shimura_*`). About 36 s in, the GPU thread aborts (exit code `0xC0000409`) on an assertion while
-compiling compute shader `b5500bd4`:
+Latest run (`sharp-source-readfirstlane`, 2026-10-28): no crash and no `Sharp dword` warning
+(shader `b5500bd4` was not reached this time). The game loads world tiles and character textures,
+then **hangs**: the main thread spins at `+0x709942` (same caller chain as the old job-wait loop,
+`+0x8b9dd8 +0x89c145 +0x893d12`). Its registers are those of an `rdtsc` microsecond wait (`r14`
+= `0x14117168`, the game's delay static; `r15` = `0x431bde82d7b634db`, the divide-by-1e6
+constant); `rbx = 0x110ce4c4` (image `+0x10ce4c4`) is the likely polled address. All job workers,
+`ProxySetSync` and the GPU threads are idle.
 
-    resource_discover_pass.cpp:277 Assertion Failed!   (ASSERT(IsSharpSource(source)))
-
-A descriptor dword comes from neither user data nor a constant read. This happens in
-`ResourceDiscoverPass`, before the port's lane passes, so it is not caused by them. Fix on
-`sharp-source-readfirstlane`, **not built or run yet**. (The run before this one was stopped with
-Ctrl+C at the same point and looked like a silent crash; it was not.) Nothing playable is drawn
-yet.
+The run before it aborted on `resource_discover_pass.cpp:277` (`IsSharpSource`) compiling
+compute shader `b5500bd4`; `sharp-source-readfirstlane` is the fix for that, still to be
+confirmed when that shader is reached. Nothing playable is drawn yet.
 
 Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 dump, repo at
 `C:\Users\cuboi\Documents\GOT-port\got-pc-port`.
@@ -24,7 +24,7 @@ Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 d
 
 | Branch | Fix | State |
 | --- | --- | --- |
-| `sharp-source-readfirstlane` (on `bc5-ubnorm-nz`) | `IsSharpSource` assertion in `ResourceDiscoverPass`: T#/S# dwords read through `ReadFirstLane` are taken from its source, as V# dwords already were; any other unknown source is logged (`Sharp dword N comes from <opcode>`) and skipped instead of aborting. New override `gpu/overrides/resource_discover_pass.cpp` | Pushed, **not built or run yet** |
+| `sharp-source-readfirstlane` (on `bc5-ubnorm-nz`) | `IsSharpSource` assertion in `ResourceDiscoverPass`: T#/S# dwords read through `ReadFirstLane` are taken from its source, as V# dwords already were; any other unknown source is logged (`Sharp dword N comes from <opcode>`) and skipped instead of aborting. New override `gpu/overrides/resource_discover_pass.cpp` | Built and run; the shader it fixes was not reached in that run |
 | `bc5-ubnorm-nz` (from `main`, PR #13) | `SurfaceFormat` assertion (data_format=39 BC5, num_format=11 `UbnormNz`): `UbnormNz` remapped to `Unorm` with the `UnormToUbnorm` conversion, like `Ubnorm`, in a shim copy of `video_core/amdgpu/pixel_format.h` (`gpu/shim` shadows shadPS4 headers) | Built and run: **fixed** (world tiles load) |
 
 Merged 2026-10-28 (#8-#11, in this order of the stack):
@@ -44,17 +44,13 @@ versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
 
 ## Next step
 
-Build `sharp-source-readfirstlane` (`python pc-port/scripts/build_gpu.py --jobs 12`; no shader
-version change: the shaders it affects used to abort before reaching the cache) and run:
+Dump the new wait loop and what it polls:
 
-    .\pc-port\scripts\run_game.ps1 -HangReport 40
+    .\pc-port\scripts\run_game.ps1 -HangReport 40 -Dump "+0x7098c0:0x100,+0x10ce4c0:0x40,+0x3bb64e0:0x20"
 
-Then search `run.log` for `Sharp dword`. If it is there, the source is something other than
-`ReadFirstLane` (the opcode is named), and that shader may still bind the wrong resource. Send
-the end of `run.log` either way. Exit code `-1073740791` (`0xC0000409`) is the port's own abort
-(`GPU_FATAL` in `run.log`), not a Windows-level crash.
-If the black screen comes back, the deadlock is intermittent: read the node dump
-(`-Dump "+0x3bb64e0:0x20"`) and `GNM_IRQ_MERGED` in an `-IrqLog` run.
+Disassemble `+0x7098c0` (`objdump -D -b binary -mi386:x86-64 --adjust-vma=0x7098c0`), find the
+exit condition and who should satisfy it; the node at `+0x3bb64e0` rules the old deadlock in or
+out (negative count = it is back).
 
 ## Findings
 
