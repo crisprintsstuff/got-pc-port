@@ -107,7 +107,17 @@ dumped SPIR-V file from 2026-10-20 and is not part of this work.
    `LowerDynamicBufferRead`): a buffer read whose V# cannot be bound ahead (no flattened
    source) reads guest memory through DMA (`ReadConst` with a run-time base, bounds from
    `num_records`); raw 32-bit loads and `ReadConstBuffer` only, stores keep the old binding.
-   `ShaderBinaryVersion` 13. Not built yet.
+   `ShaderBinaryVersion` 13.
+   Built and run: no change in the world (more particles and embers), and the log showed why:
+   `Run-time V# for StoreBufferU32 / StoreBufferFormatF32 / LoadBufferFormatF32: not lowered
+   to DMA`: those shaders also write their results through the run-time buffers. Now on
+   `gameplay-diag`: a new IR opcode `WriteConstDynamic` (base, dword offset, value, enabled) in
+   shim copies of `ir/opcodes.inc` / `opcodes.h` and `backend/spirv/emit_spirv_instructions.h`,
+   emitted in `gpu/emit_spirv_dma.cpp` (store through `get_bda_pointer`, dropped when the page
+   is not resident or out of range), marked as a side effect in an override of
+   `ir/microinstruction.cpp`, sets `uses_dma`; `LowerDynamicBufferAccess` handles 32-bit raw
+   and formatted loads and stores (formatted: the instruction's 32-bit format, else 32-bit
+   channels; a store's 0.0 padding is not written). `ShaderBinaryVersion` 14. Not built yet.
 2. `b5500bd4` still binds one buffer it picks at run time with 0 bytes
    (`BindBuffers: Clamped size ... to 0 for stage 0xb5500bd4`; its V# comes from a Phi,
    `Sharp dword N comes from Phi`). DMA fixed the hang, but whatever that buffer feeds may be

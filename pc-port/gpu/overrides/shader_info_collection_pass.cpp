@@ -178,6 +178,9 @@ void Visit(Info& info, const IR::Inst& inst) {
     case IR::Opcode::Memtime:
         info.uses_shader_clock = true;
         break;
+    case IR::Opcode::WriteConstDynamic: // got-pc-port: a store through the DMA page table
+        info.uses_dma = true;
+        break;
     case IR::Opcode::ReadConst:
         AddFlatbuf(info);
         if (inst.Flags<u32>() == 0) {

@@ -948,15 +948,33 @@ void PatchImageArgs(IR::Inst& inst, Info& info) {
     }
 }
 
-// got-pc-port: a buffer read whose V# is chosen while the shader runs (its dwords come from a
-// Phi or a per-lane value, so no binding can be made for it before the dispatch) reads guest
-// memory through device addresses (DMA, read_const_dynamic) at the address the V# gives.
+// got-pc-port: a buffer access whose V# is chosen while the shader runs (its dwords come from a
+// Phi or a per-lane value, so no binding can be made for it before the dispatch) reads and writes
+// guest memory through device addresses (DMA: ReadConst with a run-time base, read_const_dynamic,
+// and WriteConstDynamic, gpu/emit_spirv_dma.cpp) at the address the V# gives.
 // Ghost of Tsushima's gameplay compute shaders b5500bd4 and bdfc491f pick their buffers from a
-// table in a loop ("Sharp dword N comes from Phi"); their binding was made from garbage and
-// clamped to 0 bytes ("Clamped size from 147464286 to 0"), they read nothing, and the world
-// after the opening cutscene drew only the sky and a flat plane. Raw 32-bit reads only (no
-// formatted buffers, swizzling or thread-id addressing); writes keep the old binding.
-static bool LowerDynamicBufferRead(const ResourceDiscovery& resource) {
+// table in a loop ("Sharp dword N comes from Phi"), read them and write their results to them
+// (StoreBufferU32, StoreBufferFormatF32). Their binding was made from garbage and clamped to 0
+// bytes ("Clamped size from 147464286 to 0"), and the world after the opening cutscene drew only
+// the sky and a flat plane. 32-bit components only: raw accesses, formatted ones with a 32-bit
+// per channel instruction format, and formatted ones without (the format is the V#'s) taken as
+// 32-bit channels. No swizzled or thread-id addressing, no 8/16/64-bit or atomic accesses.
+static u32 FormatComponents(AmdGpu::DataFormat format) {
+    switch (format) {
+    case AmdGpu::DataFormat::Format32:
+        return 1;
+    case AmdGpu::DataFormat::Format32_32:
+        return 2;
+    case AmdGpu::DataFormat::Format32_32_32:
+        return 3;
+    case AmdGpu::DataFormat::Format32_32_32_32:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+static bool LowerDynamicBufferAccess(const ResourceDiscovery& resource) {
     IR::Inst& inst = *resource.user;
     const auto& sharp = resource.sharps[0];
     if (!EmulatorSettings.IsDirectMemoryAccessEnabled() || sharp.num_dwords < 4) {
@@ -966,8 +984,11 @@ static bool LowerDynamicBufferRead(const ResourceDiscovery& resource) {
         SharpFetch<AmdGpu::Buffer>::Summary::Invalid) {
         return false; // a binding can be made: the usual path
     }
+    const auto inst_info = inst.Flags<IR::BufferInstInfo>();
+    const auto inst_format = inst_info.inst_data_fmt.Value();
+    const bool inst_typed = inst_format != AmdGpu::DataFormat::FormatInvalid;
     u32 count = 0;
-    bool is_float = false;
+    bool is_float = false, is_store = false, is_format = false;
     switch (inst.GetOpcode()) {
     case IR::Opcode::ReadConstBuffer:
     case IR::Opcode::LoadBufferU32:
@@ -994,14 +1015,60 @@ static bool LowerDynamicBufferRead(const ResourceDiscovery& resource) {
     case IR::Opcode::LoadBufferF32x4:
         count = 4, is_float = true;
         break;
+    case IR::Opcode::LoadBufferFormatF32:
+        count = 4, is_float = true, is_format = true;
+        break;
+    case IR::Opcode::StoreBufferU32:
+        count = 1, is_store = true;
+        break;
+    case IR::Opcode::StoreBufferU32x2:
+        count = 2, is_store = true;
+        break;
+    case IR::Opcode::StoreBufferU32x3:
+        count = 3, is_store = true;
+        break;
+    case IR::Opcode::StoreBufferU32x4:
+        count = 4, is_store = true;
+        break;
+    case IR::Opcode::StoreBufferF32:
+        count = 1, is_store = true, is_float = true;
+        break;
+    case IR::Opcode::StoreBufferF32x2:
+        count = 2, is_store = true, is_float = true;
+        break;
+    case IR::Opcode::StoreBufferF32x3:
+        count = 3, is_store = true, is_float = true;
+        break;
+    case IR::Opcode::StoreBufferF32x4:
+        count = 4, is_store = true, is_float = true;
+        break;
+    case IR::Opcode::StoreBufferFormatF32:
+        count = 4, is_store = true, is_float = true, is_format = true;
+        break;
     default:
         LOG_WARNING(Render_Recompiler, "Run-time V# for {}: not lowered to DMA", inst.GetOpcode());
         return false;
     }
-    const auto inst_info = inst.Flags<IR::BufferInstInfo>();
-    if (inst.GetOpcode() != IR::Opcode::ReadConstBuffer &&
-        inst_info.inst_data_fmt != AmdGpu::DataFormat::FormatInvalid) {
-        return false; // typed access: needs format conversion
+    // Channels of a formatted access: the instruction's format when it has one (32 bits per
+    // channel only), else the components the translator filled (a store pads with 0.0).
+    u32 channels = count;
+    if (is_format && inst_typed) {
+        channels = FormatComponents(inst_format);
+        if (channels == 0) {
+            LOG_WARNING(Render_Recompiler, "Run-time V# with format {}: not lowered to DMA",
+                        u32(inst_format));
+            return false;
+        }
+    } else if (is_format && is_store) {
+        const IR::Inst* value = inst.Arg(2).TryInst();
+        if (value && value->NumArgs() == 4) {
+            while (channels > 1 && value->Arg(channels - 1).IsImmediate() &&
+                   value->Arg(channels - 1).F32() == 0.f) {
+                --channels;
+            }
+        }
+    } else if (!is_format && inst_typed && inst.GetOpcode() != IR::Opcode::ReadConstBuffer) {
+        return false; // typed raw access: needs format conversion
     }
     IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
     const IR::U32 dw0{sharp.dwords[0]};
@@ -1025,16 +1092,37 @@ static bool LowerDynamicBufferRead(const ResourceDiscovery& resource) {
         }
         bytes = ir.IAdd(ir.IMul(index, stride), offset);
     }
-    // Out of range reads return 0, as the hardware does: num_records counts bytes for a raw
-    // buffer (stride 0) and records otherwise.
+    // Out of range accesses read 0 and write nothing, as on the hardware: num_records counts
+    // bytes for a raw buffer (stride 0) and records otherwise.
     const IR::U1 raw = ir.IEqual(stride, ir.Imm32(0U));
     const IR::U1 in_range{ir.Select(raw, ir.ILessThan(bytes, num_records, false),
                                     ir.ILessThan(index, num_records, false))};
     const IR::U32 first_dword = ir.ShiftRightLogical(bytes, ir.Imm32(2U));
+    if (is_store) {
+        const IR::Value value = inst.Arg(2);
+        IR::Block& block = *inst.GetParent();
+        const auto where = IR::Block::InstructionList::s_iterator_to(inst);
+        for (u32 i = 0; i < channels; ++i) {
+            const IR::Value component = count == 1 ? value : ir.CompositeExtract(value, i);
+            const IR::U32 word = is_float ? ir.BitCast<IR::U32, IR::F32>(IR::F32{component})
+                                          : IR::U32{component};
+            block.PrependNewInst(where, IR::Opcode::WriteConstDynamic,
+                                 {base, ir.IAdd(first_dword, ir.Imm32(i)), word, in_range});
+        }
+        inst.Invalidate();
+        block.Instructions().erase(where);
+        return true;
+    }
     std::array<IR::Value, 4> words{};
     for (u32 i = 0; i < count; ++i) {
-        const IR::U32 word = ir.ReadConst(base, ir.IAdd(first_dword, ir.Imm32(i)));
-        const IR::U32 value{ir.Select(in_range, word, ir.Imm32(0U))};
+        IR::U32 value;
+        if (i < channels) {
+            const IR::U32 word = ir.ReadConst(base, ir.IAdd(first_dword, ir.Imm32(i)));
+            value = IR::U32{ir.Select(in_range, word, ir.Imm32(0U))};
+        } else {
+            // Missing channels of a formatted read: 0, and 1.0 for w.
+            value = ir.Imm32(i == 3 ? 0x3F800000U : 0U);
+        }
         words[i] = is_float ? IR::Value{ir.BitCast<IR::F32, IR::U32>(value)} : IR::Value{value};
     }
     const IR::Value result =
@@ -1055,7 +1143,7 @@ void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resou
     for (const auto& usage : resources) {
         IR::Inst& inst = *usage.user;
         if (IsBufferInstruction(inst)) {
-            if (LowerDynamicBufferRead(usage)) {
+            if (LowerDynamicBufferAccess(usage)) {
                 lowered.insert(&inst);
                 continue;
             }
