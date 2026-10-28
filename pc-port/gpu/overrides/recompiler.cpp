@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <atomic>
 #include <array>
+#include <vector>
 #include "common/logging/classes.h"
 #include "shader_recompiler/frontend/control_flow_graph.h"
 #include "shader_recompiler/frontend/decode.h"
@@ -46,6 +47,49 @@ static void ClampReadLanesToSubgroup(IR::Program& program, const Profile& profil
                 inst.SetArg(1, ir.BitwiseAnd(IR::U32{lane}, ir.Imm32(size - 1)));
             }
         }
+    }
+}
+
+// A shuffle or lane read whose source lane is inactive (not launched, or outside the primitive,
+// as in the partial quads and warps along the odd 513-pixel edge of Ghost of Tsushima's loading
+// screen tiles) returns an undefined value in Vulkan. ps 361a48f5 takes a wave minimum with
+// ShuffleXor and ReadLane and loops until it reaches 255; one stale value below 255 kept it at
+// that value forever and the GPU hung. Outside compute shaders the source lane is now tested in
+// the ballot of active lanes: a shuffle from an inactive lane keeps the lane's own value and a
+// lane read takes the first active lane's, which leaves a reduction over the active lanes intact.
+static IR::U1 LaneIsActive(IR::IREmitter& ir, const IR::U32& lane) {
+    const IR::U64 active = ir.Ballot(ir.Imm1(true));
+    const IR::U64 bit = IR::U64{ir.BitwiseAnd(IR::U64{ir.ShiftRightLogical(active, lane)}, ir.Imm64(u64{1}))};
+    return ir.INotEqual(bit, ir.Imm64(u64{0}));
+}
+
+static void GuardLaneReadsToActiveLanes(IR::Program& program) {
+    if (program.info.hw_stage == HwStage::Compute) {
+        return;
+    }
+    std::vector<IR::Inst*> worklist;
+    for (IR::Block* block : program.blocks) {
+        for (IR::Inst& inst : block->Instructions()) {
+            const auto opcode = inst.GetOpcode();
+            if (opcode == IR::Opcode::ShuffleXor || opcode == IR::Opcode::ReadLane) {
+                worklist.push_back(&inst);
+            }
+        }
+    }
+    for (IR::Inst* inst : worklist) {
+        IR::IREmitter ir{*inst->GetParent(), IR::Block::InstructionList::s_iterator_to(*inst)};
+        const IR::U32 value{inst->Arg(0)};
+        IR::U32 result;
+        if (inst->GetOpcode() == IR::Opcode::ShuffleXor) {
+            const IR::U32 mask{inst->Arg(1)};
+            const IR::U1 active = LaneIsActive(ir, IR::U32{ir.BitwiseXor(ir.LaneId(), mask)});
+            result = IR::U32{ir.Select(active, ir.ShuffleXor(value, mask), value)};
+        } else {
+            const IR::U32 lane{inst->Arg(1)};
+            const IR::U1 active = LaneIsActive(ir, lane);
+            result = IR::U32{ir.Select(active, ir.ReadLane(value, lane), ir.ReadFirstLane(value))};
+        }
+        inst->ReplaceUsesWithAndRemove(result);
     }
 }
 
@@ -243,6 +287,7 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     Shader::Optimization::DeadCodeEliminationPass(program);
     Shader::Optimization::LowerWave64BallotPass(program, runtime_info, profile);
     ClampReadLanesToSubgroup(program, profile);
+    GuardLaneReadsToActiveLanes(program);
     Shader::Optimization::LowerHardwareIntrinsics(program);
     clock.Mark("dce_wave_intrin");
     Shader::Optimization::ConstantPropagationPass(program.post_order_blocks);

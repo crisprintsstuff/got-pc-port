@@ -4088,6 +4088,14 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
             } else {
                 if (rasterizer && direct_write_bytes)
                     rasterizer->BeforeGpuThreadWrite(dst,direct_write_bytes);
+                // DATA_SEL 0 writes nothing and only raises the interrupt. PM4CmdReleaseMem::
+                // SignalFence has no case for it (nor for INT_SEL 1, its usual pair) and stopped
+                // the GPU thread at UNREACHABLE while Ghost of Tsushima loaded the world.
+                if (selection == DataSelect::None) {
+                    if (packet.int_sel.Value() != InterruptSelect::None)
+                        Platform::IrqC::Instance()->Signal(
+                            static_cast<Platform::InterruptId>(queue.pipe_id));
+                } else
                 packet.SignalFence(
                     [pipe_id=queue.pipe_id] { Platform::IrqC::Instance()->Signal(
                         static_cast<Platform::InterruptId>(pipe_id)); },
@@ -4267,6 +4275,11 @@ void Liverpool::RunDeferredFence(u32 opcode, const u32* words, u32 pipe_id) {
         const VAddr dst = packet.Address<VAddr>();
         if (rasterizer && direct_write_bytes)
             rasterizer->BeforeGpuThreadWrite(dst, direct_write_bytes);
+        // DATA_SEL 0: interrupt only, as in the ASC queue's RELEASE_MEM.
+        if (selection == DataSelect::None) {
+            if (packet.int_sel.Value() != InterruptSelect::None)
+                Platform::IrqC::Instance()->Signal(static_cast<Platform::InterruptId>(pipe_id));
+        } else
         packet.SignalFence(
             [pipe_id] { Platform::IrqC::Instance()->Signal(
                 static_cast<Platform::InterruptId>(pipe_id)); },
