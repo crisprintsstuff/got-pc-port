@@ -59,6 +59,17 @@ reset, `ProxySetSync` signal (`0xffffffff00000000`), arm completes at once, `+0x
 the entry, fault. Open question: what the PS4 delivers on event 6 that wakes `ProxySetSync`
 (every pipe 6 interrupt makes it signal once). Next: watch its target `obj+0x1f30`
 (`0x13ba91b0`) with `-IrqLog`.
+Eighth run (watch node + `obj+0x1f30`, `-IrqLog`): `obj+0x1f30` is a counter the frame jobs
+advance once per frame (`+0x57ecb9`), `obj+0x1f34` stays `0x17`. In the frames before the fault
+the cycle is: reset, arm, counter +1, `ProxySetSync` signal (fires), **a second
+`ProxySetSync` signal**. Pipe 6 queue 0 ends each frame with three RELEASE_MEMs (`int_sel=3`:
+a flag, a counter at `0x1100000070`, an offset at `0x1100000068`), all raising event 6, and
+`ProxySetSync` was woken twice. When the second signal lands after the reset, the next frame is
+pre-paid and the fault follows. On the PS4 the three come back to back and wake it once.
+Fix on `irq-burst-merge`: a merged interrupt moves the pending delivery to the delay after it,
+up to `ISS_ASC_IRQ_MERGE_MAX_US` (default 8000) after the first, so one burst is one wakeup.
+Also: hang reports now write the `-Dump` memory before the thread walk (the walk got stuck
+after a few threads again and the dumps were lost).
 
 Previous runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
 compute shader `b5500bd4` starts running, though its SPIR-V now validates. Its waterfall loop
@@ -79,6 +90,7 @@ Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 d
 
 | Branch | Fix | State |
 | --- | --- | --- |
+| `irq-burst-merge` (on `probe-regs`) | Exit code 21 at `+0xb64121` (frames overlapping): interrupts merged over a whole burst (`ISS_ASC_IRQ_MERGE_MAX_US`, `gpu/overrides/gnmdriver.cpp`), so `ProxySetSync` wakes once per frame | Pushed, not built yet |
 | `probe-regs` (on `skip-cs-diagnostic`) | `PROBE_EVENT` prints `r8`-`r11` and the accessed address; only the first faulting thread reports; `ISS_WATCH` write watchpoints (`src/probe.c`) | Register part built and run; `ISS_WATCH` pushed, not built yet |
 | `skip-cs-diagnostic` (on `bitfield-insert64`) | Diagnostic `ISS_SKIP_CS=<hex hash>[,...]`: drops compute dispatches of those shaders (both dispatch paths in `gpu/overrides/vk_rasterizer.cpp`), logs `SKIP_CS <hash>` once | Built and run: **confirmed**, title screen reached with `b5500bd4` skipped |
 | `bitfield-insert64` (on `sharp-source-readfirstlane`) | Invalid 64-bit `OpBitFieldInsert` in `b5500bd4`: `BitFieldInsert64` rebuilt from 64-bit shifts, AND and OR (`gpu/overrides/recompiler.cpp`, `LowerBitFieldInsert64`); `ShaderBinaryVersion` 11 | Built and run: SPIR-V validates now, but the GPU still hangs (see above) |

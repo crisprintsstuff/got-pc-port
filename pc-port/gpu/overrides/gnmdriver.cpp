@@ -197,9 +197,19 @@ void LogSubmit(const char* kind, u32 count, const u32* const* dcbs, const u32* s
 // (a dozen RELEASE_MEMs on pipe 6 per batch) ends before the waiter wakes, so ProxySetSync wakes
 // and signals once per burst; delivered one by one, each woke it again and the extra signals
 // took the countdown below zero (-2 to -5 in the hang reports, more with a longer delay).
+// ISS_ASC_IRQ_MERGE_MAX_US (default 8000; 0 = merge only within the delay): each merged interrupt
+// moves the delivery to ISS_ASC_IRQ_DELAY_US after it, up to this long after the first, so a
+// burst spread over more than the delay still wakes the waiter once. Watchpoints on the countdown
+// (ISS_WATCH, 2026-10-28) showed ProxySetSync woken twice per frame by the three RELEASE_MEMs that
+// end a frame on pipe 6 queue 0 (flag, counter, offset). The first wakeup signals the frame's
+// countdown as the game expects; the second signals it again, and when it lands after the main
+// thread has reset the countdown it pre-pays the next frame, which is then released without
+// waiting: the next frame's job clears a per-frame pointer that this frame's jobs still write
+// through (NULL write at +0xb64121, exit code 21).
 namespace {
 struct DelayedIrq {
     std::chrono::steady_clock::time_point due;
+    std::chrono::steady_clock::time_point first;
     EqueueInternal* equeue;
     u64 id;
 };
@@ -215,8 +225,10 @@ public:
     void Push(EqueueInternal* equeue, u64 id) {
         {
             std::scoped_lock lock{mutex};
-            for (const DelayedIrq& queued : pending) {
+            const auto now = std::chrono::steady_clock::now();
+            for (DelayedIrq& queued : pending) {
                 if (queued.equeue == equeue && queued.id == id) {
+                    queued.due = std::max(queued.due, std::min(now + delay, queued.first + merge_max));
                     if (irq_log && LogNth(++merged)) {
                         std::fprintf(stderr, "GNM_IRQ_MERGED n=%u eq=%p id=0x%llx\n", merged,
                                      static_cast<void*>(equeue), static_cast<unsigned long long>(id));
@@ -224,7 +236,7 @@ public:
                     return;
                 }
             }
-            pending.push_back({std::chrono::steady_clock::now() + delay, equeue, id});
+            pending.push_back({now + delay, now, equeue, id});
         }
         wake.notify_one();
     }
@@ -233,6 +245,8 @@ private:
     IrqDelayer() {
         const char* p = std::getenv("ISS_ASC_IRQ_DELAY_US");
         delay = std::chrono::microseconds(p ? std::strtoull(p, nullptr, 10) : 1000ull);
+        const char* m = std::getenv("ISS_ASC_IRQ_MERGE_MAX_US");
+        merge_max = std::max(delay, std::chrono::microseconds(m ? std::strtoull(m, nullptr, 10) : 8000ull));
         if (delay.count() > 0) {
             worker = std::thread([this] { Run(); });
             worker.detach();
@@ -242,13 +256,21 @@ private:
         std::unique_lock lock{mutex};
         for (;;) {
             wake.wait(lock, [this] { return !pending.empty(); });
-            const auto due = pending.front().due;
+            // A merge can move an entry's delivery later, so the next one due is not always
+            // the front.
+            auto earliest = pending.begin();
+            for (auto it = pending.begin(); it != pending.end(); ++it) {
+                if (it->due < earliest->due) {
+                    earliest = it;
+                }
+            }
+            const auto due = earliest->due;
             if (std::chrono::steady_clock::now() < due) {
                 wake.wait_until(lock, due);
                 continue;
             }
-            const DelayedIrq next = pending.front();
-            pending.pop_front();
+            const DelayedIrq next = *earliest;
+            pending.erase(earliest);
             lock.unlock();
             next.equeue->TriggerEvent(next.id, OrbisKernelEvent::Filter::GraphicsCore,
                                       reinterpret_cast<void*>(next.id));
@@ -256,6 +278,7 @@ private:
         }
     }
     std::chrono::microseconds delay{};
+    std::chrono::microseconds merge_max{};
     std::mutex mutex;
     std::condition_variable wake;
     std::deque<DelayedIrq> pending;

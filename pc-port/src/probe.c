@@ -283,8 +283,10 @@ static void hang_report(const char *why, int resume) {
     HANDLE out = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (out == INVALID_HANDLE_VALUE) out = GetStdHandle(STD_ERROR_HANDLE);
     runtime_report_write(out, "HANG_REPORT begin (%s) tick_ms=%llu\r\n", why, (unsigned long long)GetTickCount64());
-    runtime_report_threads(out, resume);
+    // Memory dumps first: the thread walk can get stuck partway (it stopped after a few threads in
+    // several reports, 2026-10-28), and then the dumps asked for were never written.
     runtime_report_dumps(out);
+    runtime_report_threads(out, resume);
     runtime_report_write(out, "HANG_REPORT end\r\n");
     if (out != GetStdHandle(STD_ERROR_HANDLE)) CloseHandle(out);
 }
