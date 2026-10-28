@@ -15,7 +15,13 @@ Then two runs with the shader cache back on hung the GPU on `b5500bd4` again, wi
 `Enabling DMA` line: the cache handed back the binaries compiled earlier without DMA (DMA is not
 part of the cache key). So DMA is what fixes `b5500bd4`. Now DMA is on by default
 (`BB_DIRECT_MEMORY_ACCESS=0` turns it off) and `ShaderBinaryVersion` is 12, so old binaries are
-recompiled. Open: the frame rate (about 7 FPS with watchpoints and no shader cache).
+recompiled. With the cache rebuilt: settings menu and the opening cutscene in English, but
+still about 7 FPS on the second run. Hang report: all job workers idle, the main thread always
+in a kernel wait (scan `+0x6dadef`); the report stopped before the host (GPU) threads again.
+`run_game.ps1` now writes `frames.csv` (and `-Profile` adds GPU timestamps) for
+`analyze_performance.py`. Note: the launcher runs with a large tuned environment from the
+inFAMOUS port (`kGameEnvironment` in `launcher/launcher.cpp`: unified memory, fast draw paths,
+parallel render, ...); `run_game.ps1` sets none of it, so its numbers are the untuned path.
 title screen renders at ~13 FPS, no `DEVICE LOST`. So `b5500bd4` is confirmed as the GPU hang.
 Its effect is missing while skipped. Second run: after the spinner, right after the first
 `SKIP_CS` line and `Created native guest thread: GameState`, three threads (job workers, chain
