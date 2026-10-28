@@ -36,6 +36,16 @@ brightness screen). The table lies in the first direct mapping (`0x1000000000`, 
 two direct mappings alias. `probe-regs` adds `ISS_WATCH=<addr>,...`: hardware write watchpoints
 that log every write (`WATCH` lines) to `[entry+0x28]` of entries 0, 18 and 34
 (`0x1003f20868,0x1003f20bc8,0x1003f20ec8`).
+Sixth run (`ISS_WATCH` on those three): no fault this time (the watchpoints change the timing);
+it reached `b5500bd4` and hung the GPU as before (DMA was off). The writes: job functions clear
+`[entry+0x28]` (`+0xb61ac4`, also `+0xb6191a`) and then set it (`+0xb63726`), always the same
+thread for one clear/set pair, from the job runner (`+0x8030bc`). The values alternate between
+two buffers (`0x150340d410` / `0x150260d410`): double-buffered per-frame data in the
+`0x1500000000` direct mapping. Pairs for alternate buffers come from different threads a few
+log lines apart, so the next frame's set-up job runs while this frame's jobs still write
+through the pointer (`+0xb64121`): frames overlap. Fits the sync node at `0x13bb64e0` being
+over-signalled (count below 0 in the black-screen hangs) and so completing early. Next run
+watches the node too: `ISS_WATCH=13bb64e0,1003f20868`.
 
 Previous runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
 compute shader `b5500bd4` starts running, though its SPIR-V now validates. Its waterfall loop
