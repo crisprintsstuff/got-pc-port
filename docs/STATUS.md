@@ -72,8 +72,19 @@ dumped SPIR-V file from 2026-10-20 and is not part of this work.
    No mapping failures. Buffers clamped to 0 or less than asked: `b5500bd4` (17990 -> 0),
    `bdfc491f` (4801 -> 0), `616789a5`, `d4f5d0b6`. Theory for the flat world: terrain and
    objects stream in, and streaming starves at this frame time (or reads the clamped buffers).
-   Next run on `gameplay-diag`: `ISS_GPU_PROFILE=2` (per compute shader GPU time) and
-   `ISS_TRACE_READBACK=1` (`READBACK_SITE rip=` of the game code that reads GPU data).
+   That run (`ISS_GPU_PROFILE=2`, `ISS_TRACE_READBACK=1`): compute is not the GPU cost
+   (gameplay: `735cf693` ~150 ms/s, `b5500bd4` ~30 ms/s, `bdfc491f` ~12 ms/s, the rest small).
+   The readbacks are the game reading small GPU-written results in a double-buffered pair of
+   blocks in the `0x1100000000` heap, `0x11001a2000` / `0x11013a2000` (offsets 0x000, 0x214,
+   0xdd0-0xf60), from `+0x59f7d4` and from TLS-patched copies of game code (`0x23e65b...`).
+   Labels in that heap are written when the command processor reads them, not when the GPU is
+   done (`UNIFIED_STATS fences_outside` ~230/frame), so the game reads a buffer it believes is
+   finished and the port has to wait for the GPU. Unified memory on that heap writes those
+   labels at GPU completion (deferred fences), but it covers one range only and the per-frame
+   heap at `0x1500000000` needs it too. Next: try unified on `0x1100000000:0x14c00000` in
+   gameplay (test C crashed in the cutscene from the unmap bug, now fixed); the real fix is
+   unified memory over several ranges (`gpu/unified_memory.*`, `BufferCache::EnableUnified`,
+   `ObtainUnified`, the DMA page table).
 2. `b5500bd4` still binds one buffer it picks at run time with 0 bytes
    (`BindBuffers: Clamped size ... to 0 for stage 0xb5500bd4`; its V# comes from a Phi,
    `Sharp dword N comes from Phi`). DMA fixed the hang, but whatever that buffer feeds may be
