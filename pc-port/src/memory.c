@@ -172,14 +172,33 @@ void memory_visit(void (*visit)(uint64_t,uint64_t,uint8_t *)){
     for(unsigned i=0;i<count;++i)visit(snapshot[i].address,snapshot[i].size,snapshot[i].shadow);
 }
 void memory_set_map_hook(void (*hook)(uint64_t,uint64_t,uint8_t *)){AcquireSRWLockExclusive(&memory_lock);map_hook=hook;ReleaseSRWLockExclusive(&memory_lock);}
+// The GPU tracks ranges that can span neighbouring mappings. In the arena each mapping is its own
+// view and VirtualProtect cannot cross views, so each committed region is protected on its own;
+// placeholders and free gaps between mappings have nothing to protect.
 int memory_gpu_protect(uint64_t address,uint64_t size,uint32_t permissions){
-    if(!size)return 1;DWORD old;uint32_t executable=0;
-    AcquireSRWLockShared(&memory_lock);
-    for(unsigned i=0;i<mapping_count;++i)if(address>=mappings[i].address&&address-mappings[i].address<mappings[i].size){executable=mappings[i].permissions&4;break;}
-    ReleaseSRWLockShared(&memory_lock);
-    DWORD mode=(permissions&2)?PAGE_READWRITE:(permissions&1)?PAGE_READONLY:PAGE_NOACCESS;
-    if(executable)mode=(permissions&2)?PAGE_EXECUTE_READWRITE:PAGE_EXECUTE_READ;
-    return VirtualProtect((void *)(uintptr_t)address,(SIZE_T)size,mode,&old)!=0;
+    if(!size)return 1;
+    const uint64_t end=address+size<address?UINT64_MAX:address+size;
+    for(uint64_t at=address;at<end;){
+        MEMORY_BASIC_INFORMATION info;
+        if(!VirtualQuery((void *)(uintptr_t)at,&info,sizeof(info)))return 0;
+        uint64_t stop=(uintptr_t)info.BaseAddress+info.RegionSize;if(stop>end)stop=end;
+        if(info.State==MEM_COMMIT){
+            uint32_t executable=0;DWORD old;
+            AcquireSRWLockShared(&memory_lock);
+            for(unsigned i=0;i<mapping_count;++i)if(at>=mappings[i].address&&at-mappings[i].address<mappings[i].size){executable=mappings[i].permissions&4;break;}
+            ReleaseSRWLockShared(&memory_lock);
+            DWORD mode=(permissions&2)?PAGE_READWRITE:(permissions&1)?PAGE_READONLY:PAGE_NOACCESS;
+            if(executable)mode=(permissions&2)?PAGE_EXECUTE_READWRITE:PAGE_EXECUTE_READ;
+            if(!VirtualProtect((void *)(uintptr_t)at,(SIZE_T)(stop-at),mode,&old)){
+                printf("GPU protect failed: address=0x%llx bytes=%llu (of 0x%llx+%llu) permissions=%u winerror=%lu\n",
+                       (unsigned long long)at,(unsigned long long)(stop-at),(unsigned long long)address,
+                       (unsigned long long)size,permissions,GetLastError());
+                return 0;
+            }
+        }
+        at=stop;
+    }
+    return 1;
 }
 uint64_t GUEST_ABI memory_direct_size(void) { return CAPACITY; }
 
