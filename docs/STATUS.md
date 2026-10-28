@@ -40,13 +40,15 @@ versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
 
 ## Next step
 
-Build `bc5-ubnorm-nz` (`python pc-port/scripts/build_gpu.py --jobs 12`; the conversion is part of
-each shader's specialization key, so no `ShaderBinaryVersion` bump and no full recompile) and run:
+Find what ended the last run. It left nothing in `run.log`, so get:
 
-    .\pc-port\scripts\run_game.ps1 -HangReport 40
+- the exit code from the PowerShell window (`Exited with code ...`): `-1073741571`
+  (0xC00000FD) is a stack overflow, `-1073740791` (0xC0000409) a fast-fail;
+- the Event Viewer entry (Windows Logs > Application, Error, `iss-probe.exe`): exception code,
+  faulting module and offset.
 
-and send the end of `run.log`. A crash in a missing shadPS4 case is the likely next stop: each
-fix so far has moved the game further into the world load.
+A guest stack overflow points at the runtime's thread stack sizes (`pc-port/src/threads.c`); a
+fault in `iss-gpu.dll` gives an offset to symbolize (`scripts/symbolize.py`).
 If the black screen comes back, the deadlock is intermittent: read the node dump
 (`-Dump "+0x3bb64e0:0x20"`) and `GNM_IRQ_MERGED` in an `-IrqLog` run.
 
