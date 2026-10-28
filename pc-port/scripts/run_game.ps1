@@ -13,11 +13,12 @@ $env:ISS_TLS_PATCH = "1"
 # Unprotect the clean pages around a write fault with it (as the launcher does): fewer write
 # faults; 7.2 -> 11.7 FPS in the opening cutscene (2026-10-28). An existing value is kept.
 if (-not $env:ISS_FAULT_WINDOW_KB) { $env:ISS_FAULT_WINDOW_KB = "64" }
-# Unified memory on the 1.39 GB heap the game maps at 0x1500000000 (per-frame data): the GPU uses
-# the guest's bytes in place, with no write tracking or readbacks (gpu/unified_memory.h). The
-# opening cutscene went from 11.7 to 30 FPS (the game's cap). Existing values are kept.
+# Unified memory: the GPU uses the guest's bytes in place, with no write tracking or readbacks
+# (gpu/unified_memory.h), on two heaps: the 1.39 GB per-frame data at 0x1500000000 (the opening
+# cutscene went from 11.7 to 30 FPS) and the 332 MB heap at 0x1100000000, whose labels and small
+# GPU results the game reads back every frame in gameplay. Existing values are kept.
 if (-not $env:ISS_UNIFIED_MEMORY) { $env:ISS_UNIFIED_MEMORY = "1" }
-if (-not $env:ISS_UNIFIED_RANGE) { $env:ISS_UNIFIED_RANGE = "0x1500000000:0x56e00000" }
+if (-not $env:ISS_UNIFIED_RANGE) { $env:ISS_UNIFIED_RANGE = "0x1500000000:0x56e00000,0x1100000000:0x14c00000" }
 $env:ISS_HANG_REPORT = if ($HangReport -gt 0) { "$HangReport" } else { "" }
 $env:ISS_HANG_DUMP = $Dump
 $env:ISS_HANG_DUMP_REG = $DumpReg

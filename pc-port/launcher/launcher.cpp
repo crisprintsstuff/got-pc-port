@@ -290,10 +290,11 @@ std::wstring PickFolder(HWND owner) {
 // cutscene at its 30 FPS cap, 2026-10-28). The inFAMOUS port's tuned set (fast draw paths, native
 // passes, shader recipes, a 240 Hz vblank, the command processor pinned to CPU 14, unified memory
 // on inFAMOUS's heap at 0x20000000) is not used: none of it was tried with this game.
-// Unified memory covers the 1.39 GB heap the game maps at 0x1500000000 (its per-frame data).
+// Unified memory covers the game's per-frame heap at 0x1500000000 and the heap at 0x1100000000
+// whose labels and GPU results it reads back every frame.
 const char* const kGameEnvironment[][2] = {
     {"ISS_GPU", "1"}, {"ISS_TLS_PATCH", "1"}, {"ISS_FAULT_WINDOW_KB", "64"},
-    {"ISS_UNIFIED_MEMORY", "1"}, {"ISS_UNIFIED_RANGE", "0x1500000000:0x56e00000"},
+    {"ISS_UNIFIED_MEMORY", "1"}, {"ISS_UNIFIED_RANGE", "0x1500000000:0x56e00000,0x1100000000:0x14c00000"},
 };
 
 constexpr int MinPlayedFrames = 600; // a session that played (not only the preload and title)

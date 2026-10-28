@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <deque>
 #include <mutex>
@@ -253,14 +254,18 @@ public:
         return block_shift;
     }
 
-    /// ISS_UNIFIED_MEMORY (unified_memory.h): whether the range lies in the imported guest heap
-    /// the GPU uses in place (false until it is imported).
+    /// ISS_UNIFIED_MEMORY (unified_memory.h): whether the range lies in one of the imported guest
+    /// heaps the GPU uses in place (false until it is imported).
     [[nodiscard]] bool IsUnified(VAddr address, u64 size) const noexcept {
+        return FindUnified(address, size) != nullptr;
+    }
+    /// Only the primary heap (range 0), the one UnifiedBuffer and UnifiedBase describe.
+    [[nodiscard]] bool IsPrimaryUnified(VAddr address, u64 size) const noexcept {
         return address >= unified_base && size != 0 && address + size <= unified_end;
     }
-    /// ISS_NATIVE_RECORDER: the imported heap's buffer and guest base (null before import).
+    /// ISS_NATIVE_RECORDER: the primary heap's buffer and guest base (null before import).
     [[nodiscard]] const Buffer* UnifiedBuffer() const noexcept {
-        return unified_buffer.get();
+        return unified_buffer;
     }
     [[nodiscard]] VAddr UnifiedBase() const noexcept {
         return unified_base;
@@ -771,12 +776,28 @@ private:
     bool EnableUnified();
     std::pair<const Buffer*, u64> ObtainUnified(VAddr device_addr, u32 size, bool is_written,
                                                 bool* known_unwritten);
+    /// One imported heap per ISS_UNIFIED_RANGE entry (end 0 until imported).
+    struct UnifiedHeap {
+        VAddr base{};
+        VAddr end{};
+        bool failed{};
+        std::unique_ptr<Buffer> buffer;
+        vk::DeviceMemory memory{};
+        std::vector<u64> chunk_tick;
+    };
+    [[nodiscard]] const UnifiedHeap* FindUnified(VAddr address, u64 size) const noexcept {
+        if (size == 0) return nullptr;
+        for (const auto& heap : unified_heaps)
+            if (heap.end != 0 && address >= heap.base && address + size <= heap.end) return &heap;
+        return nullptr;
+    }
+    bool EnableUnifiedHeap(unsigned index);
+    std::array<UnifiedHeap, 4> unified_heaps;
+    bool unified_pending = true; ///< Some heap is neither imported nor failed.
+    /// The primary heap (range 0), for the code that knows one heap only.
     VAddr unified_base{};
     VAddr unified_end{};
-    bool unified_failed{};
-    std::unique_ptr<Buffer> unified_buffer;
-    vk::DeviceMemory unified_memory{};
-    std::vector<u64> unified_chunk_tick;
+    const Buffer* unified_buffer{};
 };
 
 } // namespace VideoCore

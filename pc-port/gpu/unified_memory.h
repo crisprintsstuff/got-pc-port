@@ -45,7 +45,9 @@ enum Stat : unsigned {
 void Add(Stat stat, std::uint64_t value = 1);
 /// UNIFIED_STATS on stderr every 5 seconds (command processor thread).
 void MaybeReport();
-/// The heap (ISS_UNIFIED_RANGE, default B).
-std::uint64_t RangeBase();
-std::uint64_t RangeSize();
+/// The heaps (ISS_UNIFIED_RANGE=base:size[,base:size...], default B); range 0 is the primary one.
+inline constexpr unsigned MaxRanges = 4;
+unsigned RangeCount();
+std::uint64_t RangeBase(unsigned index = 0);
+std::uint64_t RangeSize(unsigned index = 0);
 } // namespace iss::unified

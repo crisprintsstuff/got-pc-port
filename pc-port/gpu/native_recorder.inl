@@ -442,7 +442,7 @@ static ng::Recording* RecordBatch(const ng::Batch& b, const ng::RangeStart& star
 
     // Resolves a guest range the draw reads: the imported heap or a published arena.
     const auto resolve = [&](VAddr address, u64 size, vk::Buffer& handle, u64& offset) {
-        if (unified && cache.IsUnified(address, size)) {
+        if (unified && cache.IsPrimaryUnified(address, size)) {
             handle = unified->Handle();
             offset = address - unified_base;
             if (!rec->reads_unified) {

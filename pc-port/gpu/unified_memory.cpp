@@ -16,22 +16,33 @@ const bool enabled = [] {
 namespace {
 using u64 = std::uint64_t;
 struct Range {
-    u64 base = 0x20000000ull, size = 0x20000000ull;
+    u64 base, size;
 };
-const Range range = [] {
-    Range r;
-    // ISS_UNIFIED_RANGE=base:size (hexadecimal or decimal).
+struct Ranges {
+    std::array<Range, MaxRanges> range{};
+    unsigned count = 0;
+};
+const Ranges ranges = [] {
+    Ranges r;
+    // ISS_UNIFIED_RANGE=base:size[,base:size...] (hexadecimal or decimal), up to MaxRanges.
+    // Ghost of Tsushima needs two heaps: its per-frame data at 0x1500000000 and the heap at
+    // 0x1100000000 whose labels and small GPU results the game reads back every frame.
     if (const char* p = std::getenv("ISS_UNIFIED_RANGE")) {
-        char* end{};
-        const u64 base = std::strtoull(p, &end, 0);
-        if (end && *end == ':') {
-            const u64 size = std::strtoull(end + 1, nullptr, 0);
-            if (size) r = {base, size};
+        while (*p && r.count < MaxRanges) {
+            char* end{};
+            const u64 base = std::strtoull(p, &end, 0);
+            if (!end || *end != ':') break;
+            const u64 size = std::strtoull(end + 1, &end, 0);
+            if (size) r.range[r.count++] = {base, size};
+            if (*end != ',') break;
+            p = end + 1;
         }
     }
+    if (r.count == 0) r.range[r.count++] = {0x20000000ull, 0x20000000ull}; // inFAMOUS's heap B
     if (enabled)
-        std::fprintf(stderr, "PORT_TUNING unified_memory base=0x%llx size=0x%llx\n",
-                     (unsigned long long)r.base, (unsigned long long)r.size);
+        for (unsigned i = 0; i < r.count; ++i)
+            std::fprintf(stderr, "PORT_TUNING unified_memory base=0x%llx size=0x%llx\n",
+                         (unsigned long long)r.range[i].base, (unsigned long long)r.range[i].size);
     return r;
 }();
 std::array<std::atomic<u64>, StatCount> stats{};
@@ -41,8 +52,9 @@ constexpr const char* names[StatCount] = {
     "fences_outside", "fences_flushed", "cp_label_waits", "cp_read_syncs", "cp_read_wait_ms"};
 } // namespace
 
-u64 RangeBase() { return range.base; }
-u64 RangeSize() { return range.size; }
+unsigned RangeCount() { return ranges.count; }
+u64 RangeBase(unsigned index) { return ranges.range[index].base; }
+u64 RangeSize(unsigned index) { return ranges.range[index].size; }
 
 void Add(Stat stat, u64 value) {
     stats[stat].fetch_add(value, std::memory_order_relaxed);

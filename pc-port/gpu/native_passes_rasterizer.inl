@@ -1021,7 +1021,7 @@ static np::DrawResult Record(np::Segment& s, void* regs_ptr, u64 key, const u32*
     const u64 alignment = g.instance->StorageMinAlignment();
     // Resolves a guest range the draw reads: the imported heap or a published arena.
     const auto resolve = [&](VAddr address, u64 size, vk::Buffer& handle, u64& offset) {
-        if (unified && cache.IsUnified(address, size)) {
+        if (unified && cache.IsPrimaryUnified(address, size)) {
             handle = unified->Handle();
             offset = address - unified_base;
             if (!r.reads_unified) {

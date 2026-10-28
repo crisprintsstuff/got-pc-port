@@ -85,6 +85,11 @@ dumped SPIR-V file from 2026-10-20 and is not part of this work.
    gameplay (test C crashed in the cutscene from the unmap bug, now fixed); the real fix is
    unified memory over several ranges (`gpu/unified_memory.*`, `BufferCache::EnableUnified`,
    `ObtainUnified`, the DMA page table).
+   Unified on `0x1100000000` alone in gameplay: about 10 FPS (no better). On `gameplay-diag`:
+   `ISS_UNIFIED_RANGE` takes several ranges (`base:size,base:size`, up to 4); each heap is
+   imported on its own (`BufferCache::UnifiedHeap`), labels in any of them are written at GPU
+   completion, and `run_game.ps1` and the launcher now use both heaps. Range 0 stays the one
+   the inFAMOUS native paths know (`IsPrimaryUnified`). Not built yet.
 2. `b5500bd4` still binds one buffer it picks at run time with 0 bytes
    (`BindBuffers: Clamped size ... to 0 for stage 0xb5500bd4`; its V# comes from a Phi,
    `Sharp dword N comes from Phi`). DMA fixed the hang, but whatever that buffer feeds may be

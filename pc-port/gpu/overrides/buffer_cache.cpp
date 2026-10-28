@@ -2711,7 +2711,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBuffer(VAddr device_addr, u32 s
     if (iss::repeat_census::enabled) [[unlikely]]
         iss::repeat_census::Note(iss::repeat_census::ObtainBuffer, device_addr, size, is_written);
     if (iss::unified::enabled) [[unlikely]] {
-        if (unified_end == 0 && !unified_failed) {
+        if (unified_pending) {
             EnableUnified();
         }
         if (IsUnified(device_addr, size)) {
@@ -3794,13 +3794,34 @@ void BufferCache::ProbeHostImport(VAddr address) {
 // at the first binding after it is mapped (the game maps its heaps at boot, before it draws),
 // so no binding of it went through the arena before: its blocks are marked resident without
 // sparse backing and their BDA page table entries point into the imported buffer.
+// Several heaps (ISS_UNIFIED_RANGE lists them): each is imported on its own, once it is mapped.
 bool BufferCache::EnableUnified() {
     if (!liverpool || !liverpool->IsCurrentCpThread()) {
         return false;
     }
-    const auto fail = [this](const char* why) {
-        unified_failed = true;
-        std::fprintf(stderr, "UNIFIED_MEMORY off: %s\n", why);
+    const unsigned count =
+        std::min<unsigned>(iss::unified::RangeCount(), static_cast<unsigned>(unified_heaps.size()));
+    bool pending = false, imported = false;
+    for (unsigned i = 0; i < count; ++i) {
+        const auto& heap = unified_heaps[i];
+        if (heap.end != 0 || heap.failed) {
+            continue;
+        }
+        if (EnableUnifiedHeap(i)) {
+            imported = true;
+        } else if (!heap.failed) {
+            pending = true; // not mapped yet: the next binding tries again
+        }
+    }
+    unified_pending = pending;
+    return imported;
+}
+
+bool BufferCache::EnableUnifiedHeap(unsigned index) {
+    UnifiedHeap& heap = unified_heaps[index];
+    const auto fail = [&heap, index](const char* why) {
+        heap.failed = true;
+        std::fprintf(stderr, "UNIFIED_MEMORY off for range %u: %s\n", index, why);
         return false;
     };
     if (cp_split_enabled || compute_queue != nullptr) {
@@ -3809,8 +3830,8 @@ bool BufferCache::EnableUnified() {
     if (!instance.HasExternalMemoryHost()) {
         return fail("VK_EXT_external_memory_host not available");
     }
-    const VAddr base = iss::unified::RangeBase();
-    const u64 size = iss::unified::RangeSize();
+    const VAddr base = iss::unified::RangeBase(index);
+    const u64 size = iss::unified::RangeSize(index);
     const auto span = memory->DescribeBacking(base, size);
     if (!span) {
         return false; // not mapped yet: the next binding tries again
@@ -3889,29 +3910,30 @@ bool BufferCache::EnableUnified() {
         .allocationSize = size,
         .memoryTypeIndex = type,
     };
-    if (device.allocateMemory(&alloc_info, nullptr, &unified_memory) != vk::Result::eSuccess) {
+    if (device.allocateMemory(&alloc_info, nullptr, &heap.memory) != vk::Result::eSuccess) {
         device.destroyBuffer(handle);
         return fail("allocateMemory (import)");
     }
-    if (device.bindBufferMemory(handle, unified_memory, 0) != vk::Result::eSuccess) {
+    if (device.bindBufferMemory(handle, heap.memory, 0) != vk::Result::eSuccess) {
         device.destroyBuffer(handle);
-        device.freeMemory(unified_memory);
-        unified_memory = vk::DeviceMemory{};
+        device.freeMemory(heap.memory);
+        heap.memory = vk::DeviceMemory{};
         return fail("bindBufferMemory");
     }
     // A Buffer around the imported handle: created as a small sparse buffer (no memory), whose
     // handle is replaced. Its destructor destroys the handle only.
-    unified_buffer = std::make_unique<Buffer>(instance, base, 64_KB, MemoryType::Sparse,
-                                              "Unified guest heap");
-    unified_buffer->buffer.Destroy();
-    unified_buffer->buffer.buffer = handle;
-    unified_buffer->buffer.bda_addr = device.getBufferAddress(vk::BufferDeviceAddressInfo{
+    heap.buffer = std::make_unique<Buffer>(instance, base, 64_KB, MemoryType::Sparse,
+                                           "Unified guest heap");
+    Buffer* const buffer = heap.buffer.get();
+    buffer->buffer.Destroy();
+    buffer->buffer.buffer = handle;
+    buffer->buffer.bda_addr = device.getBufferAddress(vk::BufferDeviceAddressInfo{
         .buffer = handle});
-    unified_buffer->cpu_addr = base;
-    unified_buffer->size_bytes = size;
-    unified_buffer->mem_type = MemoryType::HostCached;
-    unified_buffer->is_coherent = true;
-    unified_chunk_tick.assign(size >> UNIFIED_CHUNK_SHIFT, 0);
+    buffer->cpu_addr = base;
+    buffer->size_bytes = size;
+    buffer->mem_type = MemoryType::HostCached;
+    buffer->is_coherent = true;
+    heap.chunk_tick.assign(size >> UNIFIED_CHUNK_SHIFT, 0);
 
     // Shaders that read guest memory through device addresses: the heap's blocks resolve into
     // the imported buffer, and are resident (never backed in the arena).
@@ -3922,7 +3944,7 @@ bool BufferCache::EnableUnified() {
         Staging().Request(num_blocks * sizeof(vk::DeviceAddress), MemoryType::HostUncached);
     auto* entries = reinterpret_cast<vk::DeviceAddress*>(staging.mapped);
     for (u64 i = 0; i < num_blocks; ++i) {
-        entries[i] = unified_buffer->buffer.bda_addr + (i << block_shift);
+        entries[i] = buffer->buffer.bda_addr + (i << block_shift);
     }
     staging.Flush();
     const vk::BufferCopy copy{
@@ -3936,24 +3958,30 @@ bool BufferCache::EnableUnified() {
         MarkResident(first_block, last_block);
     }
     arena_binding_generation.fetch_add(1, std::memory_order_release);
-    Rt().untracked_reads = unified_buffer.get();
-    unified_base = base;
-    unified_end = base + size;
+    Rt().untracked_reads[index] = buffer;
+    heap.base = base;
+    heap.end = base + size;
+    if (index == 0) {
+        unified_base = base;
+        unified_end = base + size;
+        unified_buffer = buffer;
+    }
     std::fprintf(stderr,
-                 "UNIFIED_MEMORY on: guest 0x%llx size 0x%llx host %p memory type %u (bits 0x%x)\n",
-                 (unsigned long long)base, (unsigned long long)size, host, type,
+                 "UNIFIED_MEMORY on: range %u guest 0x%llx size 0x%llx host %p memory type %u (bits 0x%x)\n",
+                 index, (unsigned long long)base, (unsigned long long)size, host, type,
                  host_properties.memoryTypeBits);
     return true;
 }
 
 std::pair<const Buffer*, u64> BufferCache::ObtainUnified(VAddr device_addr, u32 size,
                                                          bool is_written, bool* known_unwritten) {
-    const u64 first = (device_addr - unified_base) >> UNIFIED_CHUNK_SHIFT;
-    const u64 last = (device_addr + size - 1 - unified_base) >> UNIFIED_CHUNK_SHIFT;
+    UnifiedHeap& heap = const_cast<UnifiedHeap&>(*FindUnified(device_addr, size));
+    const u64 first = (device_addr - heap.base) >> UNIFIED_CHUNK_SHIFT;
+    const u64 last = (device_addr + size - 1 - heap.base) >> UNIFIED_CHUNK_SHIFT;
     if (is_written) {
         const u64 tick = Sched().CurrentTick();
         for (u64 c = first; c <= last; ++c) {
-            unified_chunk_tick[c] = tick;
+            heap.chunk_tick[c] = tick;
         }
         // Memos keyed on the GPU write sequence (stage memo stamps) see the write.
         memory_tracker->BumpWriteSeq();
@@ -3967,16 +3995,20 @@ std::pair<const Buffer*, u64> BufferCache::ObtainUnified(VAddr device_addr, u32 
         }
         iss::unified::Add(touched ? iss::unified::Reads : iss::unified::UntouchedReads);
     }
-    return {unified_buffer.get(), device_addr - unified_base};
+    return {heap.buffer.get(), device_addr - heap.base};
 }
 
 bool BufferCache::UnifiedTouched(VAddr address, u64 size) const noexcept {
     // Only GPU writes not known to be complete: once done, the guest's bytes are current.
+    const UnifiedHeap* heap = FindUnified(address, size);
+    if (!heap) {
+        return false;
+    }
     const u64 known = Sched().GetWorkSemaphore()->KnownGpuTick();
-    const u64 first = (address - unified_base) >> UNIFIED_CHUNK_SHIFT;
-    const u64 last = (address + size - 1 - unified_base) >> UNIFIED_CHUNK_SHIFT;
+    const u64 first = (address - heap->base) >> UNIFIED_CHUNK_SHIFT;
+    const u64 last = (address + size - 1 - heap->base) >> UNIFIED_CHUNK_SHIFT;
     for (u64 c = first; c <= last; ++c) {
-        if (unified_chunk_tick[c] > known) {
+        if (heap->chunk_tick[c] > known) {
             return true;
         }
     }
@@ -3999,14 +4031,15 @@ void BufferCache::UnifiedHostBarrier() {
 }
 
 void BufferCache::SyncUnifiedRead(VAddr address, u64 size) {
-    if (!IsUnified(address, size)) {
+    const UnifiedHeap* heap = FindUnified(address, size);
+    if (!heap) {
         return;
     }
-    const u64 first = (address - unified_base) >> UNIFIED_CHUNK_SHIFT;
-    const u64 last = (address + size - 1 - unified_base) >> UNIFIED_CHUNK_SHIFT;
+    const u64 first = (address - heap->base) >> UNIFIED_CHUNK_SHIFT;
+    const u64 last = (address + size - 1 - heap->base) >> UNIFIED_CHUNK_SHIFT;
     u64 tick = 0;
     for (u64 c = first; c <= last; ++c) {
-        tick = std::max(tick, unified_chunk_tick[c]);
+        tick = std::max(tick, heap->chunk_tick[c]);
     }
     auto& sched = Sched();
     if (tick == 0 || sched.IsFree(tick)) {

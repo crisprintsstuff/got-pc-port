@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include "common/interval_set.h"
 #include "common/types.h"
 #include "video_core/buffer_cache/buffer.h"
@@ -81,9 +82,15 @@ public:
 
     void FlushBarriers();
 
-    /// ISS_UNIFIED_MEMORY: the imported heap's buffer, whose reads are not recorded as ranges
-    /// (a write to it is then always ordered after a barrier, see IsBufferAccessed).
-    const VideoCore::Buffer* untracked_reads{};
+    /// ISS_UNIFIED_MEMORY: the imported heaps' buffers, whose reads are not recorded as ranges
+    /// (a write to them is then always ordered after a barrier, see IsBufferAccessed).
+    std::array<const VideoCore::Buffer*, 4> untracked_reads{};
+    [[nodiscard]] bool IsUntrackedReads(const VideoCore::Buffer* handle) const noexcept {
+        if (!handle) return false;
+        for (const auto* b : untracked_reads)
+            if (b == handle) return true;
+        return false;
+    }
 
     /// Stage binding memo: changes whenever a recorded buffer write, an image layout or access
     /// transition or a backing replacement could make a remembered binding outcome stale.

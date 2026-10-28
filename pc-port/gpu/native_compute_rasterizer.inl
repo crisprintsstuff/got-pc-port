@@ -404,7 +404,7 @@ static np::DrawResult Record(np::Segment& s, void* regs_ptr, u64 key, const u32*
         Range range{.address = address, .size = size, .written = slot.written,
                     .formatted = slot.formatted};
         vk::Buffer handle;
-        if (unified && cache.IsUnified(address, size)) {
+        if (unified && cache.IsPrimaryUnified(address, size)) {
             range.buffer = unified;
             range.offset = address - unified_base;
             handle = unified->Handle();

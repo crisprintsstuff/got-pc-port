@@ -869,7 +869,7 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
 
 bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 size,
                                bool check_read_access) {
-    if (handle == untracked_reads && check_read_access && handle) {
+    if (check_read_access && IsUntrackedReads(handle)) {
         // ISS_UNIFIED_MEMORY: its reads are not recorded; a write orders after all of them.
         return true;
     }
@@ -884,7 +884,7 @@ bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 
 void Runtime::AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size,
                            vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access) {
     AssertCpRecordingLane();
-    if (handle == untracked_reads && handle &&
+    if (IsUntrackedReads(handle) &&
         !(src_access & (vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eTransferWrite |
                         vk::AccessFlagBits2::eMemoryWrite |
                         vk::AccessFlagBits2::eColorAttachmentWrite |
