@@ -107,6 +107,10 @@ region by region.
 
 ## Reading hang reports
 
+- Known bug (2026-10-28): after the GPU hung, two reports in a row stopped after 7 lines,
+  while sampling `AK::LibAudioOut` inside `SDL3.dll`. The writer probably suspends a thread that
+  holds a lock it then needs (heap or loader lock). Fix in `runtime_report_*` (`src/runtime.c`):
+  avoid allocating or resolving modules while a thread is suspended.
 - `-HangReport 40` rewrites `pc-port\out\hang-report.txt` every 40 s. Copy it before Ctrl+C, or
   the report can be cut off mid-write.
 - `-Dump "+<image offset>:<bytes>,<address>:<bytes>,*<address>:<bytes>"` (`*` follows a pointer);
