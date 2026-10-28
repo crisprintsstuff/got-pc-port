@@ -3,6 +3,9 @@
 
 #include <limits>
 #include <optional>
+#include <unordered_set>
+#include "common/logging/log.h"
+#include "core/emulator_settings.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
 #include "shader_recompiler/ir/ir_emitter.h"
@@ -945,14 +948,117 @@ void PatchImageArgs(IR::Inst& inst, Info& info) {
     }
 }
 
+// got-pc-port: a buffer read whose V# is chosen while the shader runs (its dwords come from a
+// Phi or a per-lane value, so no binding can be made for it before the dispatch) reads guest
+// memory through device addresses (DMA, read_const_dynamic) at the address the V# gives.
+// Ghost of Tsushima's gameplay compute shaders b5500bd4 and bdfc491f pick their buffers from a
+// table in a loop ("Sharp dword N comes from Phi"); their binding was made from garbage and
+// clamped to 0 bytes ("Clamped size from 147464286 to 0"), they read nothing, and the world
+// after the opening cutscene drew only the sky and a flat plane. Raw 32-bit reads only (no
+// formatted buffers, swizzling or thread-id addressing); writes keep the old binding.
+static bool LowerDynamicBufferRead(const ResourceDiscovery& resource) {
+    IR::Inst& inst = *resource.user;
+    const auto& sharp = resource.sharps[0];
+    if (!EmulatorSettings.IsDirectMemoryAccessEnabled() || sharp.num_dwords < 4) {
+        return false;
+    }
+    if (ConstructSharpFetch<AmdGpu::Buffer>(sharp).summary !=
+        SharpFetch<AmdGpu::Buffer>::Summary::Invalid) {
+        return false; // a binding can be made: the usual path
+    }
+    u32 count = 0;
+    bool is_float = false;
+    switch (inst.GetOpcode()) {
+    case IR::Opcode::ReadConstBuffer:
+    case IR::Opcode::LoadBufferU32:
+        count = 1;
+        break;
+    case IR::Opcode::LoadBufferU32x2:
+        count = 2;
+        break;
+    case IR::Opcode::LoadBufferU32x3:
+        count = 3;
+        break;
+    case IR::Opcode::LoadBufferU32x4:
+        count = 4;
+        break;
+    case IR::Opcode::LoadBufferF32:
+        count = 1, is_float = true;
+        break;
+    case IR::Opcode::LoadBufferF32x2:
+        count = 2, is_float = true;
+        break;
+    case IR::Opcode::LoadBufferF32x3:
+        count = 3, is_float = true;
+        break;
+    case IR::Opcode::LoadBufferF32x4:
+        count = 4, is_float = true;
+        break;
+    default:
+        LOG_WARNING(Render_Recompiler, "Run-time V# for {}: not lowered to DMA", inst.GetOpcode());
+        return false;
+    }
+    const auto inst_info = inst.Flags<IR::BufferInstInfo>();
+    if (inst.GetOpcode() != IR::Opcode::ReadConstBuffer &&
+        inst_info.inst_data_fmt != AmdGpu::DataFormat::FormatInvalid) {
+        return false; // typed access: needs format conversion
+    }
+    IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
+    const IR::U32 dw0{sharp.dwords[0]};
+    const IR::U32 dw1{sharp.dwords[1]};
+    const IR::U32 num_records{sharp.dwords[2]};
+    // V#: base address in dword 0 and the low 16 bits of dword 1, stride in bits 16-29.
+    const IR::Value base = ir.CompositeConstruct(dw0, ir.BitwiseAnd(dw1, ir.Imm32(0xFFFFU)));
+    const IR::U32 stride = ir.BitFieldExtract(dw1, ir.Imm32(16U), ir.Imm32(14U));
+    IR::U32 index = ir.Imm32(0U);
+    IR::U32 bytes;
+    if (inst.GetOpcode() == IR::Opcode::ReadConstBuffer) {
+        bytes = ir.ShiftLeftLogical(IR::U32{inst.Arg(1)}, ir.Imm32(2U)); // dword index
+    } else {
+        IR::U32 offset = ir.IAdd(ir.Imm32(u32(inst_info.inst_offset.Value())),
+                                 IR::GetBufferSOffsetArg(&inst));
+        if (inst_info.voffset_enable) {
+            offset = ir.IAdd(offset, IR::GetBufferVOffsetArg(&inst));
+        }
+        if (inst_info.index_enable) {
+            index = IR::GetBufferIndexArg(&inst);
+        }
+        bytes = ir.IAdd(ir.IMul(index, stride), offset);
+    }
+    // Out of range reads return 0, as the hardware does: num_records counts bytes for a raw
+    // buffer (stride 0) and records otherwise.
+    const IR::U1 raw = ir.IEqual(stride, ir.Imm32(0U));
+    const IR::U1 in_range{ir.Select(raw, ir.ILessThan(bytes, num_records, false),
+                                    ir.ILessThan(index, num_records, false))};
+    const IR::U32 first_dword = ir.ShiftRightLogical(bytes, ir.Imm32(2U));
+    std::array<IR::Value, 4> words{};
+    for (u32 i = 0; i < count; ++i) {
+        const IR::U32 word = ir.ReadConst(base, ir.IAdd(first_dword, ir.Imm32(i)));
+        const IR::U32 value{ir.Select(in_range, word, ir.Imm32(0U))};
+        words[i] = is_float ? IR::Value{ir.BitCast<IR::F32, IR::U32>(value)} : IR::Value{value};
+    }
+    const IR::Value result =
+        count == 1 ? words[0]
+        : count == 2 ? ir.CompositeConstruct(words[0], words[1])
+        : count == 3 ? ir.CompositeConstruct(words[0], words[1], words[2])
+                     : ir.CompositeConstruct(words[0], words[1], words[2], words[3]);
+    inst.ReplaceUsesWithAndRemove(result);
+    return true;
+}
+
 void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resources,
                           const Profile& profile) {
     // Iterate over discovered resources and patch them after finding the sharp.
     // Pass 1: Track resource sharps
     Descriptors descriptors{info};
+    std::unordered_set<const IR::Inst*> lowered;
     for (const auto& usage : resources) {
         IR::Inst& inst = *usage.user;
         if (IsBufferInstruction(inst)) {
+            if (LowerDynamicBufferRead(usage)) {
+                lowered.insert(&inst);
+                continue;
+            }
             PatchBufferSharp(usage, info, descriptors, profile);
         } else if (IsImageInstruction(inst)) {
             PatchImageSharp(usage, info, descriptors, profile);
@@ -992,6 +1098,9 @@ void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resou
     // Pass 2: Patch instruction args
     for (const auto& usage : resources) {
         IR::Inst& inst = *usage.user;
+        if (lowered.contains(&inst)) {
+            continue;
+        }
         if (IsBufferInstruction(inst)) {
             PatchBufferArgs(inst, info);
         } else if (IsImageInstruction(inst)) {

@@ -98,7 +98,16 @@ dumped SPIR-V file from 2026-10-20 and is not part of this work.
    bytes: buffers that run from one 64 KiB streaming mapping into the next were cut at the first
    one's end (`ClampRangeSize` -> `memory_clamp` stops at a mapping's end). Fix on
    `gameplay-diag`: `MemoryManager::ClampRangeSize` (`gpu/bridge.cpp`) continues across
-   neighbouring mappings (uploads already copy page by page). Not built yet.
+   neighbouring mappings (uploads already copy page by page).
+   Built and run: draw shaders no longer clamped (draws 1415 -> 1567), still no world, 6.9 FPS
+   (GPU 110 ms). Left: `b5500bd4` (147464286 -> 0) and `bdfc491f` (4790 -> 0), the two compute
+   shaders that run only in gameplay (300-500 dispatches/s) and pick a buffer at run time
+   (`Sharp dword N comes from Phi`): their binding is made from garbage. Likely what decides
+   what the world draws. Fix on `gameplay-diag` (`resource_patching_pass.cpp`,
+   `LowerDynamicBufferRead`): a buffer read whose V# cannot be bound ahead (no flattened
+   source) reads guest memory through DMA (`ReadConst` with a run-time base, bounds from
+   `num_records`); raw 32-bit loads and `ReadConstBuffer` only, stores keep the old binding.
+   `ShaderBinaryVersion` 13. Not built yet.
 2. `b5500bd4` still binds one buffer it picks at run time with 0 bytes
    (`BindBuffers: Clamped size ... to 0 for stage 0xb5500bd4`; its V# comes from a Phi,
    `Sharp dword N comes from Phi`). DMA fixed the hang, but whatever that buffer feeds may be
