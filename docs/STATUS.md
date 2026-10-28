@@ -11,8 +11,15 @@ Its effect is missing while skipped. Second run: after the spinner, right after 
 `SKIP_CS` line and `Created native guest thread: GameState`, three threads (job workers, chain
 `+0x8030bc +0x80306e +0x2a1e90 +0x2a162d`) fault at the same instruction, `+0xb64121`
 (access violation, exit code 21; `rcx=0x3f000000` (0.5f), `r14=0x111c9270`, `r15=0x13ce4b20`,
-`r13=0`). Possibly the CPU reading data the skipped shader should have written. Waiting on a
-code dump of `+0xb63f00`. Note: simultaneous faults interleave their `PROBE_EVENT` lines.
+`r13=0`). From the code dump: a loop over the 0x30-byte entries of the table at `[obj+0xf348]`
+(`obj = [0x13ce4b20] = 0x13ba7280`, the `ProxySetSync` object) copies shader parameters; for type
+`0x1b` it writes a dword (here 0.5f) to `[entry+0x28]+0x168`, and `[entry+0x28]` (`r9`) is bad.
+`PROBE_EVENT` did not print `r9`; `probe-regs` adds `r8`-`r11`, the accessed address, and lets
+only the first faulting thread report (simultaneous faults interleaved their lines).
+Third run (same build): no fault, but frozen on the brightness screen. The DualSense was found
+(`PAD selected name=DualSense`); the main thread spins at `+0x709942` (rdtsc wait, chain
+`+0x8b9dd8 +0x89c145 +0x893d12`, `rbx=0x110ce4c4`, `r14=0x14117168`), GPU threads idle. Likely
+waiting for something the skipped shader would have written. Waiting on a dump of `+0x709880`.
 
 Previous runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
 compute shader `b5500bd4` starts running, though its SPIR-V now validates. Its waterfall loop
@@ -33,6 +40,7 @@ Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 d
 
 | Branch | Fix | State |
 | --- | --- | --- |
+| `probe-regs` (on `skip-cs-diagnostic`) | `PROBE_EVENT` prints `r8`-`r11` and the accessed address; only the first faulting thread reports (`src/probe.c`) | Pushed, not built yet |
 | `skip-cs-diagnostic` (on `bitfield-insert64`) | Diagnostic `ISS_SKIP_CS=<hex hash>[,...]`: drops compute dispatches of those shaders (both dispatch paths in `gpu/overrides/vk_rasterizer.cpp`), logs `SKIP_CS <hash>` once | Built and run: **confirmed**, title screen reached with `b5500bd4` skipped |
 | `bitfield-insert64` (on `sharp-source-readfirstlane`) | Invalid 64-bit `OpBitFieldInsert` in `b5500bd4`: `BitFieldInsert64` rebuilt from 64-bit shifts, AND and OR (`gpu/overrides/recompiler.cpp`, `LowerBitFieldInsert64`); `ShaderBinaryVersion` 11 | Built and run: SPIR-V validates now, but the GPU still hangs (see above) |
 | `sharp-source-readfirstlane` (on `bc5-ubnorm-nz`) | `IsSharpSource` assertion in `ResourceDiscoverPass`: T#/S# dwords read through `ReadFirstLane` are taken from its source, as V# dwords already were; any other unknown source is logged (`Sharp dword N comes from <opcode>`) and skipped instead of aborting. New override `gpu/overrides/resource_discover_pass.cpp` | Built and run: no abort, but the sources are Phi (not `ReadFirstLane`); the shader then likely hung the GPU |

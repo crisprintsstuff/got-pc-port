@@ -75,6 +75,11 @@ static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
        exception_code!=EXCEPTION_PRIV_INSTRUCTION)return EXCEPTION_CONTINUE_SEARCH;
     if (runtime_emulate_tls(exception)) return EXCEPTION_CONTINUE_EXECUTION;
     if (gpu_handle_fault(exception)) return EXCEPTION_CONTINUE_EXECUTION;
+    // Only the first fatal fault reports: three job workers faulting on the same instruction at
+    // once interleaved their PROBE_EVENT lines into one unreadable line (2026-10-28). The others
+    // wait here until the first one terminates the process.
+    static volatile LONG reporting;
+    if (InterlockedExchange(&reporting, 1)) for (;;) Sleep(INFINITE);
     uintptr_t address = (uintptr_t)exception->ExceptionRecord->ExceptionAddress;
     uintptr_t accessed = 0;
     DWORD code = exception->ExceptionRecord->ExceptionCode;
@@ -99,6 +104,10 @@ static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
     ReadProcessMemory(GetCurrentProcess(), (void *)exception->ContextRecord->Rsp, &caller, sizeof(caller), &copied);
     printf("PROBE_EVENT {\"status\":\"%s\",\"exception\":\"0x%08lx\",", status, code);
     printf("\"phase\":\"%s\",", phase);
+    // The address an access violation touched, and whether it read (0), wrote (1) or executed (8).
+    if (code == EXCEPTION_ACCESS_VIOLATION && exception->ExceptionRecord->NumberParameters >= 2)
+        printf("\"access\":%llu,\"accessed\":\"0x%llx\",", (unsigned long long)exception->ExceptionRecord->ExceptionInformation[0],
+               (unsigned long long)accessed);
     if (active_module != UINT64_MAX) printf("\"active_module\":%llu,", (unsigned long long)active_module);
     printf("\"rip\":\"0x%llx\",\"image_base\":\"0x%llx\",", (unsigned long long)address, (unsigned long long)(uintptr_t)image);
     if (address >= (uintptr_t)image && address - (uintptr_t)image < image_size)
@@ -117,6 +126,9 @@ static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
     {   // More registers, and the return addresses of the frame-pointer chain (the eboot keeps
         // rbp frames) as image offsets, so a fault inside a shared helper names its callers.
         CONTEXT *c = exception->ContextRecord;
+        // r8-r11 too: the fault at +0xb64121 wrote through r9, which the event did not show.
+        printf("\"r8\":\"0x%llx\",\"r9\":\"0x%llx\",\"r10\":\"0x%llx\",\"r11\":\"0x%llx\",",
+               (unsigned long long)c->R8, (unsigned long long)c->R9, (unsigned long long)c->R10, (unsigned long long)c->R11);
         printf("\"rbx\":\"0x%llx\",\"rcx\":\"0x%llx\",\"rdx\":\"0x%llx\",\"r12\":\"0x%llx\",\"r13\":\"0x%llx\",\"r14\":\"0x%llx\",\"r15\":\"0x%llx\",\"rsp\":\"0x%llx\",\"rbp\":\"0x%llx\",\"stack\":[",
                (unsigned long long)c->Rbx, (unsigned long long)c->Rcx, (unsigned long long)c->Rdx, (unsigned long long)c->R12,
                (unsigned long long)c->R13, (unsigned long long)c->R14, (unsigned long long)c->R15, (unsigned long long)c->Rsp,
