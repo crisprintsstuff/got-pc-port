@@ -32,6 +32,11 @@ default range is inFAMOUS's heap B (`0x20000000`); GoT's direct mappings are at 
 `0x1500000000` (1.39 GB: the double-buffered per-frame data), `0x2000000000`, `0x3000000000`.
 Next experiments (no rebuild): `ISS_FAULT_WINDOW_KB=64`, then unified memory on
 `0x1500000000:0x56e00000` or `0x1100000000:0x14c00000`.
+Results (opening cutscene, `-Profile`): fault window 64 KB: 11.7 FPS (protect 95 ms, faults
+104). Plus unified `0x1500000000:0x56e00000`: **28 FPS** (the game's 30 cap; protect 4 ms,
+faults 12, readbacks 0.01 MB), but it crashed after the settings screens. Unified
+`0x1100000000:0x14c00000`: 15 FPS, also crashed there. `run_game.ps1` now sets
+`ISS_FAULT_WINDOW_KB=64`. Next: the crash with unified memory on `0x1500000000`.
 title screen renders at ~13 FPS, no `DEVICE LOST`. So `b5500bd4` is confirmed as the GPU hang.
 Its effect is missing while skipped. Second run: after the spinner, right after the first
 `SKIP_CS` line and `Created native guest thread: GameState`, three threads (job workers, chain
