@@ -11,8 +11,11 @@ next step is. Newest state first; keep the history short.
 `ISS_WATCH` on): past the title screen into the game, about 7 FPS, text in Portuguese. Now the
 defaults: compute INT_SEL 3 raises no interrupt (`ISS_ASC_SEL3_IRQ=1` restores it) and the
 system language is English (`ISS_LANGUAGE`, it was 17 = Brazilian Portuguese from inFAMOUS).
-Open: whether DMA (`BB_DIRECT_MEMORY_ACCESS=1`) is needed for `b5500bd4`, and the frame rate
-(watchpoints and the disabled shader cache slow it down).
+Then two runs with the shader cache back on hung the GPU on `b5500bd4` again, with no
+`Enabling DMA` line: the cache handed back the binaries compiled earlier without DMA (DMA is not
+part of the cache key). So DMA is what fixes `b5500bd4`. Now DMA is on by default
+(`BB_DIRECT_MEMORY_ACCESS=0` turns it off) and `ShaderBinaryVersion` is 12, so old binaries are
+recompiled. Open: the frame rate (about 7 FPS with watchpoints and no shader cache).
 title screen renders at ~13 FPS, no `DEVICE LOST`. So `b5500bd4` is confirmed as the GPU hang.
 Its effect is missing while skipped. Second run: after the spinner, right after the first
 `SKIP_CS` line and `Created native guest thread: GameState`, three threads (job workers, chain
