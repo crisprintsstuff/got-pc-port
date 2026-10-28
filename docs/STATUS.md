@@ -46,6 +46,19 @@ log lines apart, so the next frame's set-up job runs while this frame's jobs sti
 through the pointer (`+0xb64121`): frames overlap. Fits the sync node at `0x13bb64e0` being
 over-signalled (count below 0 in the black-screen hangs) and so completing early. Next run
 watches the node too: `ISS_WATCH=13bb64e0,1003f20868`.
+Seventh run (that watch, DMA on, cache off): the NULL fault again, before `b5500bd4`. The node
+(8 bytes: low dword state, high dword count) cycles, all on the main thread: arm (`+0x8b3e97`
+count +1, `+0x8b4004` state 1), one signal from the frame job (`+0x803a22`/`+0x803a90` fire,
+called from `+0x8b4217` on main or `+0x8030bc` on a worker), reset (`+0x8038f7`, writes 0).
+`ProxySetSync` (`+0xb60768`) also signals it, 22 times in two bursts during loading, and every
+one is surplus. Landing between fire and reset it is harmless (the reset clears it); landing
+between reset and the next arm it pre-pays the next cycle: the arm finds count 0 and sets state
+2 at once (`0x0` then `0x2`), the frame is released without waiting and the next frame's
+set-up job clears `[entry+0x28]` while this frame's jobs use it. Right before the fault:
+reset, `ProxySetSync` signal (`0xffffffff00000000`), arm completes at once, `+0xb61ac4` clears
+the entry, fault. Open question: what the PS4 delivers on event 6 that wakes `ProxySetSync`
+(every pipe 6 interrupt makes it signal once). Next: watch its target `obj+0x1f30`
+(`0x13ba91b0`) with `-IrqLog`.
 
 Previous runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
 compute shader `b5500bd4` starts running, though its SPIR-V now validates. Its waterfall loop
