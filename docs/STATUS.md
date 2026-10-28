@@ -7,6 +7,12 @@ next step is. Newest state first; keep the history short.
 
 **Title screen reached** (2026-10-28, `skip-cs-diagnostic` with `ISS_SKIP_CS=b5500bd4`): the mask
 
+**Opening cutscene at 30 FPS** (2026-10-28, `irq-burst-merge`, real unmap, unified memory on
+`0x1500000000:0x56e00000`): renders correctly at the game's 30 FPS cap. `run_game.ps1` now sets
+`ISS_FAULT_WINDOW_KB=64`, `ISS_UNIFIED_MEMORY=1` and that range by default. Next: play past the
+cutscene and fix what comes up; the launcher (`kGameEnvironment`) still has inFAMOUS's
+settings and should get these instead.
+
 **In the game world** (2026-10-28, `irq-burst-merge` with `ISS_ASC_SEL3_IRQ=0`, DMA on,
 `ISS_WATCH` on): past the title screen into the game, about 7 FPS, text in Portuguese. Now the
 defaults: compute INT_SEL 3 raises no interrupt (`ISS_ASC_SEL3_IRQ=1` restores it) and the
