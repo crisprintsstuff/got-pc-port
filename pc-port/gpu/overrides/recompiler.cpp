@@ -7,11 +7,13 @@
 #include <cstdio>
 #include <atomic>
 #include <array>
+#include <vector>
 #include "common/logging/classes.h"
 #include "shader_recompiler/frontend/control_flow_graph.h"
 #include "shader_recompiler/frontend/decode.h"
 #include "shader_recompiler/frontend/structured_control_flow.h"
 #include "shader_recompiler/frontend/translate/translate.h"
+#include "shader_recompiler/ir/ir_emitter.h"
 #include "shader_recompiler/ir/passes/ir_passes.h"
 #include "shader_recompiler/ir/post_order.h"
 #include "shader_recompiler/ir/program.h"
@@ -19,6 +21,77 @@
 #include "shader_recompiler/recompiler.h"
 
 namespace Shader {
+
+// A wave64 v_readlane of a lane past a smaller host subgroup (lanes 32-63 on a 32-wide GPU) is an
+// OpGroupNonUniformBroadcast of a lane that does not exist: undefined. LowerWave64BallotPass
+// rebuilds those through shared memory in compute shaders; the ones left, in every other stage,
+// read the same lane of the host subgroup instead. A reduction then spans the host subgroup, which
+// its shuffles already do, so a loop waiting for the reduced value still ends (a GPU hang before).
+static void ClampReadLanesToSubgroup(IR::Program& program, const Profile& profile) {
+    const u32 size = profile.subgroup_size;
+    if (size == 0 || size >= 64) {
+        return;
+    }
+    for (IR::Block* block : program.blocks) {
+        for (IR::Inst& inst : block->Instructions()) {
+            if (inst.GetOpcode() != IR::Opcode::ReadLane) {
+                continue;
+            }
+            const IR::Value lane = inst.Arg(1);
+            if (lane.IsImmediate()) {
+                if (lane.U32() >= size) {
+                    inst.SetArg(1, IR::Value{lane.U32() & (size - 1)});
+                }
+            } else {
+                IR::IREmitter ir{*block, IR::Block::InstructionList::s_iterator_to(inst)};
+                inst.SetArg(1, ir.BitwiseAnd(IR::U32{lane}, ir.Imm32(size - 1)));
+            }
+        }
+    }
+}
+
+// A shuffle or lane read whose source lane is inactive (not launched, or outside the primitive,
+// as in the partial quads and warps along the odd 513-pixel edge of Ghost of Tsushima's loading
+// screen tiles) returns an undefined value in Vulkan. ps 361a48f5 takes a wave minimum with
+// ShuffleXor and ReadLane and loops until it reaches 255; one stale value below 255 kept it at
+// that value forever and the GPU hung. Outside compute shaders the source lane is now tested in
+// the ballot of active lanes: a shuffle from an inactive lane keeps the lane's own value and a
+// lane read takes the first active lane's, which leaves a reduction over the active lanes intact.
+static IR::U1 LaneIsActive(IR::IREmitter& ir, const IR::U32& lane) {
+    const IR::U64 active = ir.Ballot(ir.Imm1(true));
+    const IR::U64 bit = IR::U64{ir.BitwiseAnd(IR::U64{ir.ShiftRightLogical(active, lane)}, ir.Imm64(u64{1}))};
+    return ir.INotEqual(bit, ir.Imm64(u64{0}));
+}
+
+static void GuardLaneReadsToActiveLanes(IR::Program& program) {
+    if (program.info.hw_stage == HwStage::Compute) {
+        return;
+    }
+    std::vector<IR::Inst*> worklist;
+    for (IR::Block* block : program.blocks) {
+        for (IR::Inst& inst : block->Instructions()) {
+            const auto opcode = inst.GetOpcode();
+            if (opcode == IR::Opcode::ShuffleXor || opcode == IR::Opcode::ReadLane) {
+                worklist.push_back(&inst);
+            }
+        }
+    }
+    for (IR::Inst* inst : worklist) {
+        IR::IREmitter ir{*inst->GetParent(), IR::Block::InstructionList::s_iterator_to(*inst)};
+        const IR::U32 value{inst->Arg(0)};
+        IR::U32 result;
+        if (inst->GetOpcode() == IR::Opcode::ShuffleXor) {
+            const IR::U32 mask{inst->Arg(1)};
+            const IR::U1 active = LaneIsActive(ir, IR::U32{ir.BitwiseXor(ir.LaneId(), mask)});
+            result = IR::U32{ir.Select(active, ir.ShuffleXor(value, mask), value)};
+        } else {
+            const IR::U32 lane{inst->Arg(1)};
+            const IR::U1 active = LaneIsActive(ir, lane);
+            result = IR::U32{ir.Select(active, ir.ReadLane(value, lane), ir.ReadFirstLane(value))};
+        }
+        inst->ReplaceUsesWithAndRemove(result);
+    }
+}
 
 IR::BlockList GenerateBlocks(const IR::AbstractSyntaxList& syntax_list) {
     size_t num_syntax_blocks{};
@@ -213,6 +286,8 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     clock.Mark("barriers");
     Shader::Optimization::DeadCodeEliminationPass(program);
     Shader::Optimization::LowerWave64BallotPass(program, runtime_info, profile);
+    ClampReadLanesToSubgroup(program, profile);
+    GuardLaneReadsToActiveLanes(program);
     Shader::Optimization::LowerHardwareIntrinsics(program);
     clock.Mark("dce_wave_intrin");
     Shader::Optimization::ConstantPropagationPass(program.post_order_blocks);

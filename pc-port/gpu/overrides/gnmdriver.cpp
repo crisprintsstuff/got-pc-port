@@ -192,6 +192,11 @@ void LogSubmit(const char* kind, u32 count, const u32* const* dcbs, const u32* s
 // GPU runs the work later; here the command processor finishes it at once, and Ghost of Tsushima's
 // ProxySetSync then signalled a countdown sync point before the main thread had armed it (the
 // counter went below zero and the frame job was never released). Delivery order is kept.
+// An interrupt for an equeue event that is already waiting to be delivered is merged into it, as
+// a kqueue event that fires again before it is read is read once. On the PS4 a burst of fences
+// (a dozen RELEASE_MEMs on pipe 6 per batch) ends before the waiter wakes, so ProxySetSync wakes
+// and signals once per burst; delivered one by one, each woke it again and the extra signals
+// took the countdown below zero (-2 to -5 in the hang reports, more with a longer delay).
 namespace {
 struct DelayedIrq {
     std::chrono::steady_clock::time_point due;
@@ -210,6 +215,15 @@ public:
     void Push(EqueueInternal* equeue, u64 id) {
         {
             std::scoped_lock lock{mutex};
+            for (const DelayedIrq& queued : pending) {
+                if (queued.equeue == equeue && queued.id == id) {
+                    if (irq_log && LogNth(++merged)) {
+                        std::fprintf(stderr, "GNM_IRQ_MERGED n=%u eq=%p id=0x%llx\n", merged,
+                                     static_cast<void*>(equeue), static_cast<unsigned long long>(id));
+                    }
+                    return;
+                }
+            }
             pending.push_back({std::chrono::steady_clock::now() + delay, equeue, id});
         }
         wake.notify_one();
@@ -245,6 +259,7 @@ private:
     std::mutex mutex;
     std::condition_variable wake;
     std::deque<DelayedIrq> pending;
+    u32 merged{};
     std::thread worker;
 };
 } // namespace
