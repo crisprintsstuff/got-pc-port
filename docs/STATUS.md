@@ -77,6 +77,20 @@ expected one and then a second. So the countdown sometimes expects the GPU's sig
 sometimes not. Suspect: how many signals the arm expects depends on GPU progress the game reads
 at arm time, and the port completes GPU work far earlier than the PS4 would. Next: code dumps of
 the arm (`+0x8b3e00`), the frame job's signal (`+0x8b41c0`) and `ProxySetSync` (`+0xb60700`).
+Tenth run, code dumps:
+- `ProxySetSync` (`+0xb60730`): wait on event 6; then, while `[obj+0x1f30]` (frame target) >
+  `table[obj+0x1f34]` (label, table pointer at `+0x16d3208`, 8-byte entries), spin; then
+  signal the countdown and wait again. One signal per wakeup once the label has caught up.
+- Arm (`+0x8b3e90`): `lock inc` count; if the state is 0 it becomes 1, or 2 at once when the
+  count is already <= 0 (a pre-paid countdown completes on arming).
+- `+0x8b4202`: the main thread signals the countdown itself **when `[+0x3bb6570]` is 0**;
+  otherwise it leaves that to `ProxySetSync`. So in most frames `ProxySetSync` must not signal
+  at all, and it does because the GPU wakes it at every frame end.
+- `-IrqLog`: graphics EOPs use `int_sel` 0 or 2; every compute RELEASE_MEM uses 3. On later AMD
+  GPUs 3 is "send data after write confirm" (no interrupt). shadPS4 raises an interrupt for 3.
+Test on `irq-burst-merge`: `ISS_ASC_SEL3_IRQ=0` drops interrupts for compute INT_SEL 3 (label
+still written). If the PS4 does not interrupt for 3, the surplus signals stop; if it does, frames
+with the flag set wait on `ProxySetSync` forever (a hang, main thread in the countdown wait).
 
 Previous runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
 compute shader `b5500bd4` starts running, though its SPIR-V now validates. Its waterfall loop
