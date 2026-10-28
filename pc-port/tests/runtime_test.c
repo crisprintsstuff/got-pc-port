@@ -220,10 +220,25 @@ int main(void) {
     CHECK(((unsigned char *)adjacent)[0] == 0x62 && ((unsigned char *)partial)[16383] == 0x61);
     void *invalid = NULL;
     CHECK(memory_map_direct(&invalid, 65536, 3, 0, (int64_t)memory_direct_size(), 65536) != 0 && !invalid);
+    // Unmap gives the range back: lookups miss, and a fixed mapping at the same address (here of
+    // other physical memory) succeeds, as Ghost of Tsushima's texture streaming needs.
+    uint8_t *partial_byte = memory_backing((uintptr_t)partial + 16383, 1);
+    CHECK(memory_backing((uintptr_t)adjacent, 1) && memory_clamp((uintptr_t)adjacent, 1) == 1);
+    const uint64_t before_unmap = memory_mapping_epoch();
+    CHECK(memory_unmap(adjacent, 16384) == 0);
+    CHECK(memory_mapping_epoch() > before_unmap);
+    CHECK(!memory_backing((uintptr_t)adjacent, 1) && memory_clamp((uintptr_t)adjacent, 1) == 0);
+    CHECK(VirtualQuery(adjacent, &page, sizeof(page)) && page.State == MEM_RESERVE);
+    CHECK(memory_backing((uintptr_t)partial + 16383, 1) == partial_byte);
+    void *again = adjacent;
+    CHECK(memory_map_direct(&again, 16384, 3, 0x10, third, 16384) == 0 && again == adjacent);
+    CHECK(((unsigned char *)again)[16383] == 0x61);
+    CHECK(memory_backing((uintptr_t)again + 16383, 1) == partial_byte);
+    CHECK(memory_clamp((uintptr_t)again, UINT64_MAX) == 16384);
     CHECK(UnmapViewOfFile(a) && UnmapViewOfFile(b));
     CHECK(UnmapViewOfFile((void *)((uintptr_t)partial & ~(uintptr_t)65535)));
     CHECK(UnmapViewOfFile(adjacent));
     runtime_tls_detach();
-    puts("PASS: concurrent TLS/TCB/DTV, MOV/XOR/CMP flags, direct-memory ranges, shared aliases, fixed-map collision and GPU protection across mappings.");
+    puts("PASS: concurrent TLS/TCB/DTV, MOV/XOR/CMP flags, direct-memory ranges, shared aliases, fixed-map collision, GPU protection across mappings and unmap/remap.");
     return 0;
 }

@@ -121,6 +121,11 @@ void AddressSpace::Register(VAddr address,u64 size,u8 *backing){
     std::scoped_lock guard{mappings_mutex};mappings.add(boost::icl::interval<VAddr>::right_open(address,address+size));
     for(u64 at=address;at<address+size;at+=16384)backing_pages[at>>14]=backing+(at-address);
 }
+void AddressSpace::Unregister(VAddr address,u64 size){
+    if(!size)return;
+    std::scoped_lock guard{mappings_mutex};mappings.subtract(boost::icl::interval<VAddr>::right_open(address,address+size));
+    for(u64 at=address;at<address+size;at+=16384)backing_pages[at>>14]=nullptr;
+}
 boost::icl::interval_set<VAddr> AddressSpace::GetUsableRegions(){std::scoped_lock guard{mappings_mutex};return mappings;}
 void AddressSpace::Protect(VAddr address,u64 size,MemoryPermission perms){
     if(!host.protect(address,size,static_cast<u32>(perms)))throw std::runtime_error("GPU protection failed");
@@ -287,6 +292,15 @@ extern "C" void iss_gpu_map(uint64_t address,uint64_t size,uint8_t *backing){
         iss::game::feedback::IdentityRegistry::Instance().Invalidate(address,size);
     auto *memory=Core::Memory::Instance();memory->GetAddressSpace().Register(address,size,backing);
     if(auto *r=memory->GetRasterizer()){r->RegisterMemory(address,size);r->MapMemory(address,size);}
+}
+// The runtime's memory_unmap (src/memory.c), before the guest pages go: the renderer drops what
+// it cached or tracks in the range, as for a PS4 munmap.
+extern "C" void iss_gpu_unmap(uint64_t address,uint64_t size){
+    if(FeedbackIdentityEnabled())
+        iss::game::feedback::IdentityRegistry::Instance().Invalidate(address,size);
+    auto *memory=Core::Memory::Instance();
+    if(auto *r=memory->GetRasterizer())r->UnmapMemory(address,size);
+    memory->GetAddressSpace().Unregister(address,size);
 }
 extern "C" void iss_gpu_feedback_identity(uint64_t owner_object,uint64_t shader_object,
                                            uint64_t record_address){

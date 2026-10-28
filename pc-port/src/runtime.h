@@ -69,6 +69,7 @@ uint64_t memory_mapping_lock_shared(void);
 void memory_mapping_unlock_shared(void);
 int memory_gpu_protect(uint64_t address,uint64_t size,uint32_t permissions);
 void memory_set_map_hook(void (*hook)(uint64_t,uint64_t,uint8_t *));
+void memory_set_unmap_hook(void (*hook)(uint64_t,uint64_t));
 uint64_t runtime_tsc_frequency(void);
 uint64_t runtime_process_time_us(void);
 int gpu_start(uint32_t sdk_version,uint64_t image_base);

@@ -17,6 +17,7 @@ public:
     u64 SystemReservedVirtualSize() const{return 0x100000000ULL;}
     const BackingPageTable& BackingPages() const{return backing_pages;}
     void Register(VAddr address,u64 size,u8 *backing);
+    void Unregister(VAddr address,u64 size);
 private:
     BackingPageTable backing_pages;
 };

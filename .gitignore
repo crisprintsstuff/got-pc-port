@@ -11,6 +11,13 @@
 *.exp
 **/__pycache__/
 *.pyc
+# The launcher's folder when it runs from the repository root, and run_game.ps1's outputs
+/user/
+/run.log
+/frames.csv
+/performance-summary.json
+/gpu-crash*.txt
+/gpu-stall-*.txt
 
 # Local dependencies (see README: Building)
 /research/

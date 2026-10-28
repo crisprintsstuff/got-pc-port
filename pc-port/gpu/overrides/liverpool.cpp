@@ -3454,6 +3454,27 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     FIBER_EXIT;
 }
 
+// A compute RELEASE_MEM with INT_SEL 3 writes its label without raising the pipe interrupt
+// (ISS_ASC_SEL3_IRQ=1 raises it, as shadPS4 does). Every compute RELEASE_MEM Ghost of Tsushima
+// sends uses INT_SEL 3
+// and its graphics EOPs use 0 or 2, never 3; on later AMD GPUs 3 is "send data after write
+// confirm", no interrupt. Raising one per label woke ProxySetSync (event 6) at the end of every
+// frame, and it signalled the frame countdown in frames where the main thread signals it itself
+// (flag at +0x3bb6570 clear, +0x8b4202), so the next frame was released early (exit code 21).
+// Without the interrupt the game got past the title screen into the world (2026-10-28).
+static bool ComputeIrq(InterruptSelect sel) {
+    static const bool sel3 = [] {
+        const char* v = std::getenv("ISS_ASC_SEL3_IRQ");
+        return v && v[0] == '1';
+    }();
+    return sel != InterruptSelect::None && (sel != InterruptSelect::IrqUndocumented || sel3);
+}
+static void SignalComputeIrq(u32 pipe_id, InterruptSelect sel) {
+    if (ComputeIrq(sel)) {
+        Platform::IrqC::Instance()->Signal(static_cast<Platform::InterruptId>(pipe_id));
+    }
+}
+
 template <bool is_indirect>
 Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u64 submit_ns) {
     FIBER_ENTER(acb_task_name[vqid]);
@@ -4038,8 +4059,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
             if (CpSplitActive() && direct_write_bytes) {
                 const auto write = [packet,pipe_id=queue.pipe_id] {
                     packet.SignalFence(
-                        [pipe_id] { Platform::IrqC::Instance()->Signal(
-                            static_cast<Platform::InterruptId>(pipe_id)); },
+                        [pipe_id, sel = packet.int_sel.Value()] { SignalComputeIrq(pipe_id, sel); },
                         [](VAddr,u16,u16) {
                             UNREACHABLE_MSG("GDS copy inside direct ASC host-write guard");
                         });
@@ -4052,7 +4072,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
                            const auto value =
                                selection == DataSelect::Data32Low || selection == DataSelect::Data64
                                    ? std::optional<u32>{packet.DataDWord()} : std::nullopt;
-                           const bool irq = packet.int_sel.Value() != InterruptSelect::None;
+                           const bool irq = ComputeIrq(packet.int_sel.Value());
                            if (rasterizer->AscRelease(vqid, dst, direct_write_bytes, value, irq,
                                                       std::move(write)))
                                return true;
@@ -4080,10 +4100,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
                            }
                            Core::Memory::Instance()->TryWriteBacking(
                                packet.Address<void*>(), &value, num_bytes);
-                           if (packet.int_sel.Value() != InterruptSelect::None) {
-                               Platform::IrqC::Instance()->Signal(
-                                   static_cast<Platform::InterruptId>(pipe_id));
-                           }
+                           SignalComputeIrq(pipe_id, packet.int_sel.Value());
                        })) {
             } else {
                 if (rasterizer && direct_write_bytes)
@@ -4092,13 +4109,10 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid, u6
                 // SignalFence has no case for it (nor for INT_SEL 1, its usual pair) and stopped
                 // the GPU thread at UNREACHABLE while Ghost of Tsushima loaded the world.
                 if (selection == DataSelect::None) {
-                    if (packet.int_sel.Value() != InterruptSelect::None)
-                        Platform::IrqC::Instance()->Signal(
-                            static_cast<Platform::InterruptId>(queue.pipe_id));
+                    SignalComputeIrq(queue.pipe_id, packet.int_sel.Value());
                 } else
                 packet.SignalFence(
-                    [pipe_id=queue.pipe_id] { Platform::IrqC::Instance()->Signal(
-                        static_cast<Platform::InterruptId>(pipe_id)); },
+                    [pipe_id=queue.pipe_id, sel = packet.int_sel.Value()] { SignalComputeIrq(pipe_id, sel); },
                     [this](VAddr address,u16 gds_index,u16 num_dwords) {
                         rasterizer->CopyBuffer(address,gds_index,num_dwords*sizeof(u32),
                                                false,true);
@@ -4277,12 +4291,10 @@ void Liverpool::RunDeferredFence(u32 opcode, const u32* words, u32 pipe_id) {
             rasterizer->BeforeGpuThreadWrite(dst, direct_write_bytes);
         // DATA_SEL 0: interrupt only, as in the ASC queue's RELEASE_MEM.
         if (selection == DataSelect::None) {
-            if (packet.int_sel.Value() != InterruptSelect::None)
-                Platform::IrqC::Instance()->Signal(static_cast<Platform::InterruptId>(pipe_id));
+            SignalComputeIrq(pipe_id, packet.int_sel.Value());
         } else
         packet.SignalFence(
-            [pipe_id] { Platform::IrqC::Instance()->Signal(
-                static_cast<Platform::InterruptId>(pipe_id)); },
+            [pipe_id, sel = packet.int_sel.Value()] { SignalComputeIrq(pipe_id, sel); },
             [this](VAddr address, u16 gds_index, u16 num_dwords) {
                 rasterizer->CopyBuffer(address, gds_index, num_dwords * sizeof(u32), false, true);
             });

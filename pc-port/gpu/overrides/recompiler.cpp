@@ -93,6 +93,41 @@ static void GuardLaneReadsToActiveLanes(IR::Program& program) {
     }
 }
 
+// Vulkan allows OpBitFieldInsert on 32-bit integers only (VUID-StandaloneSpirv-Base-04781), but
+// S_BITSET0_B64/S_BITSET1_B64 became a 64-bit one. Ghost of Tsushima's compute shader b5500bd4
+// clears the handled lane's bit of a 64-bit mask that way in its waterfall loop over per-lane
+// textures; the GPU hung (DEVICE LOST) once it ran. The insert is rebuilt from 64-bit shifts,
+// AND and OR, which Vulkan allows.
+static void LowerBitFieldInsert64(IR::Program& program) {
+    std::vector<IR::Inst*> worklist;
+    for (IR::Block* block : program.blocks) {
+        for (IR::Inst& inst : block->Instructions()) {
+            if (inst.GetOpcode() == IR::Opcode::BitFieldInsert64) {
+                worklist.push_back(&inst);
+            }
+        }
+    }
+    for (IR::Inst* inst : worklist) {
+        IR::IREmitter ir{*inst->GetParent(), IR::Block::InstructionList::s_iterator_to(*inst)};
+        const IR::U64 base{inst->Arg(0)};
+        const IR::U64 insert{inst->Arg(1)};
+        const IR::U32 offset{inst->Arg(2)};
+        const IR::Value count = inst->Arg(3);
+        // The field of `count` ones; a count of 64 or more is the whole register.
+        IR::U64 field;
+        if (count.IsImmediate()) {
+            field = ir.Imm64(count.U32() >= 64 ? ~u64{0} : (u64{1} << count.U32()) - 1);
+        } else {
+            field = IR::U64{ir.ISub(IR::U64{ir.ShiftLeftLogical(ir.Imm64(u64{1}), IR::U32{count})},
+                                    ir.Imm64(u64{1}))};
+        }
+        const IR::U64 mask{ir.ShiftLeftLogical(field, offset)};
+        const IR::U64 kept{ir.BitwiseAnd(base, IR::U64{ir.BitwiseNot(mask)})};
+        const IR::U64 placed{ir.BitwiseAnd(IR::U64{ir.ShiftLeftLogical(insert, offset)}, mask)};
+        inst->ReplaceUsesWithAndRemove(IR::U64{ir.BitwiseOr(kept, placed)});
+    }
+}
+
 IR::BlockList GenerateBlocks(const IR::AbstractSyntaxList& syntax_list) {
     size_t num_syntax_blocks{};
     for (const auto& [_, type] : syntax_list) {
@@ -288,6 +323,7 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     Shader::Optimization::LowerWave64BallotPass(program, runtime_info, profile);
     ClampReadLanesToSubgroup(program, profile);
     GuardLaneReadsToActiveLanes(program);
+    LowerBitFieldInsert64(program);
     Shader::Optimization::LowerHardwareIntrinsics(program);
     clock.Mark("dce_wave_intrin");
     Shader::Optimization::ConstantPropagationPass(program.post_order_blocks);

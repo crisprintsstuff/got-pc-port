@@ -29,6 +29,7 @@ int gpu_start(uint32_t sdk_version,uint64_t image_base){
     publish_feedback_identity=(void *)GetProcAddress(dll,"iss_gpu_feedback_identity");
     file_opened=(void *)GetProcAddress(dll,"iss_gpu_file_opened");
     void (*mapped)(uint64_t,uint64_t,uint8_t *)=(void *)GetProcAddress(dll,"iss_gpu_map");
+    void (*unmapped)(uint64_t,uint64_t)=(void *)GetProcAddress(dll,"iss_gpu_unmap"); // optional
     dialog_open=(void *)GetProcAddress(dll,"iss_gpu_dialog_open");dialog_poll=(void *)GetProcAddress(dll,"iss_gpu_dialog_poll");
     dialog_close=(void *)GetProcAddress(dll,"iss_gpu_dialog_close");dialog_active=(void *)GetProcAddress(dll,"iss_gpu_dialog_active");
     if(!initialize||!resolve_import||!handle_fault||!mapped)return -1;
@@ -42,7 +43,7 @@ int gpu_start(uint32_t sdk_version,uint64_t image_base){
     callbacks.mapping_epoch=memory_mapping_epoch;
     callbacks.mapping_lock_shared=memory_mapping_lock_shared;
     callbacks.mapping_unlock_shared=memory_mapping_unlock_shared;
-    if(initialize(&callbacks))return -1;memory_set_map_hook(mapped);
+    if(initialize(&callbacks))return -1;memory_set_map_hook(mapped);if(unmapped)memory_set_unmap_hook(unmapped);
     puts("Vulkan renderer initialized; waiting for guest graphics submissions.");return 0;
 }
 uintptr_t gpu_resolve(const char *name){return resolve_import?resolve_import(name):0;}

@@ -55,7 +55,10 @@ public:
         return value;
     }
     bool IsCopyGpuBuffers() { static const auto value = Flag("BB_COPY_GPU_BUFFERS", false); return value; }
-    bool IsDirectMemoryAccessEnabled() { static const auto value = Flag("BB_DIRECT_MEMORY_ACCESS", false); return value; }
+    /// On by default (BB_DIRECT_MEMORY_ACCESS=0 turns it off): Ghost of Tsushima's compute shader
+    /// b5500bd4 reads memory through pointers it computes, and without DMA each such read became a
+    /// load of flatbuf dword 0, the shader ran on garbage and hung the GPU (DEVICE LOST).
+    bool IsDirectMemoryAccessEnabled() { static const auto value = Flag("BB_DIRECT_MEMORY_ACCESS", true); return value; }
     bool IsDumpShaders() { static const auto value = Flag("BB_DUMP_SHADERS", false); return value; }
     bool IsFsrEnabled() { static const auto value = Flag("BB_FSR1", false); return value; }
     bool IsHdrAllowed() { static const auto value = Flag("BB_HDR", false); return value; }
