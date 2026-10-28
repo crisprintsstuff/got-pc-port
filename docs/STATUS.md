@@ -5,7 +5,12 @@ next step is. Newest state first; keep the history short.
 
 ## Where the game stops
 
-Latest runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
+**Title screen reached** (2026-10-28, `skip-cs-diagnostic` with `ISS_SKIP_CS=b5500bd4`): the mask
+title screen renders at ~13 FPS, no `DEVICE LOST`. So `b5500bd4` is confirmed as the GPU hang.
+Its effect is missing while skipped. Next: see what the game does past the title screen, then
+the real bindless fix below.
+
+Previous runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
 compute shader `b5500bd4` starts running, though its SPIR-V now validates. Its waterfall loop
 terminates (it clears the lowest set bit of a 64-bit mask each pass) and its barriers sit in
 loops with uniform trip counts. The new clue: every dispatch logs
@@ -24,7 +29,7 @@ Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 d
 
 | Branch | Fix | State |
 | --- | --- | --- |
-| `skip-cs-diagnostic` (on `bitfield-insert64`) | Diagnostic `ISS_SKIP_CS=<hex hash>[,...]`: drops compute dispatches of those shaders (both dispatch paths in `gpu/overrides/vk_rasterizer.cpp`), logs `SKIP_CS <hash>` once | Pushed, **not built or run yet** |
+| `skip-cs-diagnostic` (on `bitfield-insert64`) | Diagnostic `ISS_SKIP_CS=<hex hash>[,...]`: drops compute dispatches of those shaders (both dispatch paths in `gpu/overrides/vk_rasterizer.cpp`), logs `SKIP_CS <hash>` once | Built and run: **confirmed**, title screen reached with `b5500bd4` skipped |
 | `bitfield-insert64` (on `sharp-source-readfirstlane`) | Invalid 64-bit `OpBitFieldInsert` in `b5500bd4`: `BitFieldInsert64` rebuilt from 64-bit shifts, AND and OR (`gpu/overrides/recompiler.cpp`, `LowerBitFieldInsert64`); `ShaderBinaryVersion` 11 | Built and run: SPIR-V validates now, but the GPU still hangs (see above) |
 | `sharp-source-readfirstlane` (on `bc5-ubnorm-nz`) | `IsSharpSource` assertion in `ResourceDiscoverPass`: T#/S# dwords read through `ReadFirstLane` are taken from its source, as V# dwords already were; any other unknown source is logged (`Sharp dword N comes from <opcode>`) and skipped instead of aborting. New override `gpu/overrides/resource_discover_pass.cpp` | Built and run: no abort, but the sources are Phi (not `ReadFirstLane`); the shader then likely hung the GPU |
 | `bc5-ubnorm-nz` (from `main`, PR #13) | `SurfaceFormat` assertion (data_format=39 BC5, num_format=11 `UbnormNz`): `UbnormNz` remapped to `Unorm` with the `UnormToUbnorm` conversion, like `Ubnorm`, in a shim copy of `video_core/amdgpu/pixel_format.h` (`gpu/shim` shadows shadPS4 headers) | Built and run: **fixed** (world tiles load) |
@@ -46,16 +51,11 @@ versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
 
 ## Next step
 
-Build `skip-cs-diagnostic` and run with the shader dropped:
-
-    $env:ISS_SKIP_CS = "b5500bd4"
-    .\pc-port\scripts\run_game.ps1 -HangReport 40
-
-- **No `DEVICE LOST`:** `b5500bd4` is confirmed. Note what the game does next. Then implement the
-  real fix: resolve Phi-sourced sharps (bindless T#/V# from a descriptor table) in
+1. With `$env:ISS_SKIP_CS = "b5500bd4"`, find out what happens past the title screen (input,
+   menus, loading a save) and fix the next stop.
+2. Real fix for `b5500bd4`: resolve Phi-sourced sharps (bindless T#/V# from a descriptor table) in
   `ResourceDiscoverPass` / `FlattenExtendedUserdataPass` / `ResourcePatchingPass`, e.g. by
   binding the descriptor table as a buffer and building the descriptor in the shader.
-- **Still `DEVICE LOST`:** the hang is elsewhere; read the black box's last commands.
 
 ## Findings
 
