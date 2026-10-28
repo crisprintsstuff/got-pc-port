@@ -133,7 +133,21 @@ void AddressSpace::Protect(VAddr address,u64 size,MemoryPermission perms){
 void MemoryManager::SetRasterizer(Vulkan::Rasterizer *value){rasterizer=value;
     host.visit_mappings([](uint64_t address,uint64_t size,uint8_t *backing){iss_gpu_map(address,size,backing);});
 }
-u64 MemoryManager::ClampRangeSize(VAddr address,u64 size){return host.clamp(address,size);}
+// The mapped length from address, up to size, across neighbouring mappings: host.clamp stops at
+// the end of one mapping (its backing is contiguous only within it), but the GPU sees guest
+// addresses, as the PS4 does. Ghost of Tsushima streams meshes into 64 KiB mappings placed side
+// by side; buffers that cross from one into the next were clamped at the boundary ("Clamped size
+// from 9952 to 3472", ~1400 a minute in the first gameplay scene, which drew no terrain or
+// characters).
+u64 MemoryManager::ClampRangeSize(VAddr address,u64 size){
+    u64 total=0;
+    while(total<size){
+        const u64 n=host.clamp(address+total,size-total);
+        if(n==0)break;
+        total+=n;
+    }
+    return total;
+}
 std::optional<MemoryManager::BackingSpan> MemoryManager::DescribeBacking(VAddr address,u64 size){
     if(size==0)return std::nullopt;
     const u64 contiguous=host.clamp(address,size);

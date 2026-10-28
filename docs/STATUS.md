@@ -89,7 +89,16 @@ dumped SPIR-V file from 2026-10-20 and is not part of this work.
    `ISS_UNIFIED_RANGE` takes several ranges (`base:size,base:size`, up to 4); each heap is
    imported on its own (`BufferCache::UnifiedHeap`), labels in any of them are written at GPU
    completion, and `run_game.ps1` and the launcher now use both heaps. Range 0 stays the one
-   the inFAMOUS native paths know (`IsPrimaryUnified`). Not built yet.
+   the inFAMOUS native paths know (`IsPrimaryUnified`).
+   Built and run: both heaps on, **readback stalls 0** (from 240 ms), loading faster, the
+   cutscene at a locked 30. Gameplay: still sky (now with the moon and some arrows) and a flat
+   plane, 7.5 FPS; now GPU bound (GPU work 100 ms per frame, command processor spinning 63 ms
+   waiting for it). The camera moves. `run.log`: ~1400 `Clamped size` per minute for many draw
+   shaders (`5e89a8b4`, `d7103693`, `77759a4`, `d8b07982`, `603aea90`, ...), e.g. 9952 -> 3472
+   bytes: buffers that run from one 64 KiB streaming mapping into the next were cut at the first
+   one's end (`ClampRangeSize` -> `memory_clamp` stops at a mapping's end). Fix on
+   `gameplay-diag`: `MemoryManager::ClampRangeSize` (`gpu/bridge.cpp`) continues across
+   neighbouring mappings (uploads already copy page by page). Not built yet.
 2. `b5500bd4` still binds one buffer it picks at run time with 0 bytes
    (`BindBuffers: Clamped size ... to 0 for stage 0xb5500bd4`; its V# comes from a Phi,
    `Sharp dword N comes from Phi`). DMA fixed the hang, but whatever that buffer feeds may be
