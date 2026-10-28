@@ -12,6 +12,7 @@
 #include "shader_recompiler/frontend/decode.h"
 #include "shader_recompiler/frontend/structured_control_flow.h"
 #include "shader_recompiler/frontend/translate/translate.h"
+#include "shader_recompiler/ir/ir_emitter.h"
 #include "shader_recompiler/ir/passes/ir_passes.h"
 #include "shader_recompiler/ir/post_order.h"
 #include "shader_recompiler/ir/program.h"
@@ -19,6 +20,34 @@
 #include "shader_recompiler/recompiler.h"
 
 namespace Shader {
+
+// A wave64 v_readlane of a lane past a smaller host subgroup (lanes 32-63 on a 32-wide GPU) is an
+// OpGroupNonUniformBroadcast of a lane that does not exist: undefined. LowerWave64BallotPass
+// rebuilds those through shared memory in compute shaders; the ones left, in every other stage,
+// read the same lane of the host subgroup instead. A reduction then spans the host subgroup, which
+// its shuffles already do, so a loop waiting for the reduced value still ends (a GPU hang before).
+static void ClampReadLanesToSubgroup(IR::Program& program, const Profile& profile) {
+    const u32 size = profile.subgroup_size;
+    if (size == 0 || size >= 64) {
+        return;
+    }
+    for (IR::Block* block : program.blocks) {
+        for (IR::Inst& inst : block->Instructions()) {
+            if (inst.GetOpcode() != IR::Opcode::ReadLane) {
+                continue;
+            }
+            const IR::Value lane = inst.Arg(1);
+            if (lane.IsImmediate()) {
+                if (lane.U32() >= size) {
+                    inst.SetArg(1, IR::Value{lane.U32() & (size - 1)});
+                }
+            } else {
+                IR::IREmitter ir{*block, IR::Block::InstructionList::s_iterator_to(inst)};
+                inst.SetArg(1, ir.BitwiseAnd(IR::U32{lane}, ir.Imm32(size - 1)));
+            }
+        }
+    }
+}
 
 IR::BlockList GenerateBlocks(const IR::AbstractSyntaxList& syntax_list) {
     size_t num_syntax_blocks{};
@@ -213,6 +242,7 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     clock.Mark("barriers");
     Shader::Optimization::DeadCodeEliminationPass(program);
     Shader::Optimization::LowerWave64BallotPass(program, runtime_info, profile);
+    ClampReadLanesToSubgroup(program, profile);
     Shader::Optimization::LowerHardwareIntrinsics(program);
     clock.Mark("dce_wave_intrin");
     Shader::Optimization::ConstantPropagationPass(program.post_order_blocks);
