@@ -204,11 +204,26 @@ int main(void) {
     CHECK((uintptr_t)partial % 16384 == 0);
     ((unsigned char *)partial)[16383] = 0x61;
     CHECK(((unsigned char *)partial)[16383] == 0x61);
+    // The GPU protects ranges across neighbouring mappings, which are separate views, and past
+    // them into unmapped placeholder space.
+    void *adjacent = (unsigned char *)partial + 16384;
+    CHECK(memory_map_direct(&adjacent, 16384, 3, 0x10, second, 16384) == 0 && adjacent == (unsigned char *)partial + 16384);
+    MEMORY_BASIC_INFORMATION page;
+    CHECK(memory_gpu_protect((uintptr_t)partial, 49152, 1));
+    CHECK(VirtualQuery(partial, &page, sizeof(page)) && page.Protect == PAGE_READONLY);
+    CHECK(VirtualQuery(adjacent, &page, sizeof(page)) && page.Protect == PAGE_READONLY);
+    CHECK(memory_gpu_protect((uintptr_t)partial + 8192, 16384, 3));
+    CHECK(VirtualQuery((unsigned char *)partial + 8192, &page, sizeof(page)) && page.Protect == PAGE_READWRITE);
+    CHECK(VirtualQuery(adjacent, &page, sizeof(page)) && page.Protect == PAGE_READWRITE && page.RegionSize == 8192);
+    CHECK(memory_gpu_protect((uintptr_t)partial, 32768, 3));
+    ((unsigned char *)adjacent)[0] = 0x62;
+    CHECK(((unsigned char *)adjacent)[0] == 0x62 && ((unsigned char *)partial)[16383] == 0x61);
     void *invalid = NULL;
     CHECK(memory_map_direct(&invalid, 65536, 3, 0, (int64_t)memory_direct_size(), 65536) != 0 && !invalid);
     CHECK(UnmapViewOfFile(a) && UnmapViewOfFile(b));
     CHECK(UnmapViewOfFile((void *)((uintptr_t)partial & ~(uintptr_t)65535)));
+    CHECK(UnmapViewOfFile(adjacent));
     runtime_tls_detach();
-    puts("PASS: concurrent TLS/TCB/DTV, MOV/XOR/CMP flags, direct-memory ranges, shared aliases and fixed-map collision.");
+    puts("PASS: concurrent TLS/TCB/DTV, MOV/XOR/CMP flags, direct-memory ranges, shared aliases, fixed-map collision and GPU protection across mappings.");
     return 0;
 }
