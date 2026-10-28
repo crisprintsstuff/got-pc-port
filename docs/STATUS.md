@@ -5,16 +5,14 @@ next step is. Newest state first; keep the history short.
 
 ## Where the game stops
 
-The game boots, shows the loading spinner and starts loading the world (`tsu_2_-10_-14.xpps`
-and other terrain tiles). With all four fix branches (latest run, 2026-10-28) it gets further into the
-world load and stops at an assertion in the renderer:
-
-    liverpool_to_vk.cpp:788 SurfaceFormat: Assertion Failed!
-    Unknown data_format=39 and num_format=11
-
-(while loading `tsu_0_-8_-15.xpps`). Format 39 is BC5 and number format 11 is `UbnormNz`, which
-shadPS4's `RemapNumberFormat` does not turn into `Unorm` as it does `Ubnorm`. Fix on
-`bc5-ubnorm-nz`, **not built or run yet**. Nothing playable is drawn yet.
+With `bc5-ubnorm-nz` (latest run, 2026-10-28) the game loads the world tiles and goes on to load
+character textures (`hero_samurai_*`, `shimura_*`, `hero_head_mtl`): frames presented up to 1479
+at 67 s. Then the process stopped with **nothing in `run.log`**: no assertion, no `GPU_FATAL`, no
+`DEVICE LOST`, no guest crash report; the log ends mid-stream. That pattern points to a death that
+skips the port's handlers (stack overflow, fast-fail) and loses buffered output. **Next:** the
+exit code `run_game.ps1` prints (`Exited with code ...`) and the Windows Event Viewer
+Application Error entry for `iss-probe.exe` (exception code, faulting module and offset).
+Nothing playable is drawn yet.
 
 Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 dump, repo at
 `C:\Users\cuboi\Documents\GOT-port\got-pc-port`.
@@ -23,7 +21,7 @@ Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 d
 
 | Branch | Fix | State |
 | --- | --- | --- |
-| `bc5-ubnorm-nz` (from `main`) | `UbnormNz` remapped to `Unorm` with the `UnormToUbnorm` conversion, like `Ubnorm`, in a shim copy of `video_core/amdgpu/pixel_format.h` (`gpu/shim` shadows shadPS4 headers) | Pushed, **not built or run yet** |
+| `bc5-ubnorm-nz` (from `main`) | `SurfaceFormat` assertion (data_format=39 BC5, num_format=11 `UbnormNz`): `UbnormNz` remapped to `Unorm` with the `UnormToUbnorm` conversion, like `Ubnorm`, in a shim copy of `video_core/amdgpu/pixel_format.h` (`gpu/shim` shadows shadPS4 headers) | Built and run: **fixed** (world tiles load) |
 
 Merged 2026-10-28 (#8-#11, in this order of the stack):
 
