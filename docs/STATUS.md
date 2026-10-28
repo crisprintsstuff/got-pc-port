@@ -64,8 +64,16 @@ dumped SPIR-V file from 2026-10-20 and is not part of this work.
 
 ## Next step
 
-1. The first gameplay scene draws only sky and a flat plane at 1.3 FPS: get `run.log`, a
-   `-Profile` summary and a hang report from there.
+1. The first gameplay scene draws only sky and a flat plane, 7-12 FPS. Profile there (30 s):
+   143 ms/frame; **readback stalls 240 ms** (6.6 reads, only 8 KB, `readback_async_wait` 220 ms:
+   the game's CPU reads small GPU-written data and waits for the GPU each time); GPU work 88 ms
+   (1341 draws, 688 dispatches); command processor 123 ms; `UNIFIED_STATS cp_read_wait_ms` 40-60
+   per frame (the command processor waits on GPU writes in the unified heap once per frame).
+   No mapping failures. Buffers clamped to 0 or less than asked: `b5500bd4` (17990 -> 0),
+   `bdfc491f` (4801 -> 0), `616789a5`, `d4f5d0b6`. Theory for the flat world: terrain and
+   objects stream in, and streaming starves at this frame time (or reads the clamped buffers).
+   Next run on `gameplay-diag`: `ISS_GPU_PROFILE=2` (per compute shader GPU time) and
+   `ISS_TRACE_READBACK=1` (`READBACK_SITE rip=` of the game code that reads GPU data).
 2. `b5500bd4` still binds one buffer it picks at run time with 0 bytes
    (`BindBuffers: Clamped size ... to 0 for stage 0xb5500bd4`; its V# comes from a Phi,
    `Sharp dword N comes from Phi`). DMA fixed the hang, but whatever that buffer feeds may be
