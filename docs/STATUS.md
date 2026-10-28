@@ -29,6 +29,13 @@ and spins until `[+0x285d8b4] == [+0x285d8b0]` (a completion count).
 `BB_DIRECT_MEMORY_ACCESS`), `EmitReadConst` turns each into a load of flatbuf dword 0: the shader
 runs on garbage. Test: `BB_DIRECT_MEMORY_ACCESS=1`, `BB_PIPELINE_CACHE=0` (the cache does not
 key on DMA), no skip.
+Fifth run (DMA on, cache off, no skip): black screen, then the same NULL fault at `+0xb64121`
+(same table `r11=0x1003f20840`, entry 0), before `b5500bd4` was even compiled. So the fault is
+**not** caused by the skip: it is a race that hits at different times (sometimes after the
+brightness screen). The table lies in the first direct mapping (`0x1000000000`, physical 0); no
+two direct mappings alias. `probe-regs` adds `ISS_WATCH=<addr>,...`: hardware write watchpoints
+that log every write (`WATCH` lines) to `[entry+0x28]` of entries 0, 18 and 34
+(`0x1003f20868,0x1003f20bc8,0x1003f20ec8`).
 
 Previous runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
 compute shader `b5500bd4` starts running, though its SPIR-V now validates. Its waterfall loop
@@ -49,7 +56,7 @@ Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 d
 
 | Branch | Fix | State |
 | --- | --- | --- |
-| `probe-regs` (on `skip-cs-diagnostic`) | `PROBE_EVENT` prints `r8`-`r11` and the accessed address; only the first faulting thread reports (`src/probe.c`) | Pushed, not built yet |
+| `probe-regs` (on `skip-cs-diagnostic`) | `PROBE_EVENT` prints `r8`-`r11` and the accessed address; only the first faulting thread reports; `ISS_WATCH` write watchpoints (`src/probe.c`) | Register part built and run; `ISS_WATCH` pushed, not built yet |
 | `skip-cs-diagnostic` (on `bitfield-insert64`) | Diagnostic `ISS_SKIP_CS=<hex hash>[,...]`: drops compute dispatches of those shaders (both dispatch paths in `gpu/overrides/vk_rasterizer.cpp`), logs `SKIP_CS <hash>` once | Built and run: **confirmed**, title screen reached with `b5500bd4` skipped |
 | `bitfield-insert64` (on `sharp-source-readfirstlane`) | Invalid 64-bit `OpBitFieldInsert` in `b5500bd4`: `BitFieldInsert64` rebuilt from 64-bit shifts, AND and OR (`gpu/overrides/recompiler.cpp`, `LowerBitFieldInsert64`); `ShaderBinaryVersion` 11 | Built and run: SPIR-V validates now, but the GPU still hangs (see above) |
 | `sharp-source-readfirstlane` (on `bc5-ubnorm-nz`) | `IsSharpSource` assertion in `ResourceDiscoverPass`: T#/S# dwords read through `ReadFirstLane` are taken from its source, as V# dwords already were; any other unknown source is logged (`Sharp dword N comes from <opcode>`) and skipped instead of aborting. New override `gpu/overrides/resource_discover_pass.cpp` | Built and run: no abort, but the sources are Phi (not `ReadFirstLane`); the shader then likely hung the GPU |

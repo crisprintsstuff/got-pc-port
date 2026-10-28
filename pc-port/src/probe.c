@@ -2,6 +2,7 @@
 // Windows x86-64 inFAMOUS entry probe. No PS4 services or graphics yet.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <tlhelp32.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,8 +66,109 @@ static void *low_allocate(size_t size, DWORD mode) {
     return NULL;
 }
 
+// ISS_WATCH=<address>[,<address>...] (up to 4, 8-byte aligned): hardware write watchpoints (debug
+// registers) on 8 bytes at each address, on every thread of the process; a thread started later
+// gets them within 50 ms. Each write logs one WATCH line: the address, the value now there, the
+// thread, the instruction after the write (x86 reports data breakpoints after the write) and,
+// for game code, its rbp return chain. Writes from host code (a memcpy in iss-gpu.dll) show too;
+// a value that changes with no WATCH line was written by the GPU or through another mapping.
+// Why: at +0xb64121 job workers write through [entry+0x28] of the table at 0x1003f20840, and
+// several entries are NULL at once (2026-10-28), with or without the skipped shader.
+static uint64_t watch_address[4];
+static int watch_count;
+static volatile LONG watch_logged;
+static void watch_location(char *out, size_t size, uint64_t address) {
+    if (address >= (uintptr_t)image && address - (uintptr_t)image < image_size) {
+        snprintf(out, size, "+0x%llx", (unsigned long long)(address - (uintptr_t)image)); return;
+    }
+    HMODULE host = NULL; char path[MAX_PATH] = "";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)(uintptr_t)address, &host) && host && GetModuleFileNameA(host, path, sizeof(path))) {
+        const char *name = strrchr(path, '\\');
+        snprintf(out, size, "%s+0x%llx", name ? name + 1 : path, (unsigned long long)(address - (uintptr_t)host)); return;
+    }
+    snprintf(out, size, "0x%llx", (unsigned long long)address);
+}
+static int watch_hit(EXCEPTION_POINTERS *exception) {
+    CONTEXT *c = exception->ContextRecord;
+    if (!watch_count || !(c->Dr6 & 0xf)) return 0;
+    for (int i = 0; i < watch_count; ++i) {
+        if (!(c->Dr6 & (1u << i))) continue;
+        uint64_t value = 0; SIZE_T got = 0;
+        ReadProcessMemory(GetCurrentProcess(), (void *)(uintptr_t)watch_address[i], &value, sizeof(value), &got);
+        // Every write while there are few; past 4000 only the writes that store 0.
+        if (InterlockedIncrement(&watch_logged) > 4000 && value) continue;
+        char where[160]; watch_location(where, sizeof(where), c->Rip);
+        char chain[256] = ""; size_t used = 0;
+        uint64_t frame = c->Rbp, link[2];
+        for (int depth = 0; depth < 6 && frame && !(frame & 7) && used + 24 < sizeof(chain); ++depth) {
+            if (!ReadProcessMemory(GetCurrentProcess(), (void *)(uintptr_t)frame, link, sizeof(link), &got) || got != sizeof(link)) break;
+            if (link[1] < (uintptr_t)image || link[1] - (uintptr_t)image >= image_size) break;
+            used += (size_t)snprintf(chain + used, sizeof(chain) - used, " +0x%llx", (unsigned long long)(link[1] - (uintptr_t)image));
+            if (link[0] <= frame) break;
+            frame = link[0];
+        }
+        printf("WATCH 0x%llx = 0x%llx tid=%lu after=%s chain:%s\n", (unsigned long long)watch_address[i],
+               (unsigned long long)value, GetCurrentThreadId(), where, chain);
+    }
+    c->Dr6 = 0;
+    return 1;
+}
+static void watch_arm(DWORD tid) {
+    HANDLE thread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, tid);
+    if (!thread) return;
+    if (SuspendThread(thread) != (DWORD)-1) {
+        CONTEXT c; memset(&c, 0, sizeof(c)); c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        if (GetThreadContext(thread, &c)) {
+            DWORD64 *slots[4] = {&c.Dr0, &c.Dr1, &c.Dr2, &c.Dr3};
+            for (int i = 0; i < watch_count; ++i) {
+                *slots[i] = watch_address[i];
+                // Local enable, break on writes (RW=01), 8 bytes (LEN=10).
+                c.Dr7 |= (DWORD64)1 << (2 * i) | (DWORD64)1 << (16 + 4 * i) | (DWORD64)2 << (18 + 4 * i);
+            }
+            SetThreadContext(thread, &c);
+        }
+        ResumeThread(thread);
+    }
+    CloseHandle(thread);
+}
+static DWORD WINAPI watch_arm_threads(void *unused) {
+    (void)unused;
+    static DWORD armed[8192]; static int armed_count;
+    for (;;) {
+        HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        THREADENTRY32 entry; entry.dwSize = sizeof(entry);
+        for (BOOL more = snapshot != INVALID_HANDLE_VALUE && Thread32First(snapshot, &entry); more; more = Thread32Next(snapshot, &entry)) {
+            if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
+            int known = 0;
+            for (int i = 0; i < armed_count && !known; ++i) known = armed[i] == entry.th32ThreadID;
+            if (known) continue;
+            watch_arm(entry.th32ThreadID);
+            if (armed_count < 8192) armed[armed_count++] = entry.th32ThreadID;
+        }
+        if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
+        Sleep(50);
+    }
+}
+static void watch_start(void) {
+    const char *spec = getenv("ISS_WATCH");
+    for (const char *s = spec; s && *s && watch_count < 4;) {
+        char *end; unsigned long long address = strtoull(s, &end, 16);
+        if (end == s) break;
+        if (address && !(address & 7)) watch_address[watch_count++] = address;
+        else printf("WATCH ignored 0x%llx: not 8-byte aligned\n", address);
+        s = *end == ',' ? end + 1 : end;
+        if (end[0] != ',') break;
+    }
+    if (!watch_count) return;
+    HANDLE thread = CreateThread(NULL, 0, watch_arm_threads, NULL, 0, NULL);
+    printf("WATCH armed: %d address(es)%s\n", watch_count, thread ? "" : " (arming thread failed)");
+    if (thread) CloseHandle(thread);
+}
+
 static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
     DWORD exception_code=exception->ExceptionRecord->ExceptionCode;
+    if (exception_code == EXCEPTION_SINGLE_STEP && watch_hit(exception)) return EXCEPTION_CONTINUE_EXECUTION;
     // Let Windows debug-print/thread-name notifications and C++ exceptions reach
     // their normal handlers. They are not guest crashes.
     if(exception_code!=EXCEPTION_ACCESS_VIOLATION && exception_code!=EXCEPTION_BREAKPOINT &&
@@ -301,6 +403,7 @@ int main(int argc, char **argv) {
     if (linked) runtime_configure(image, image_size, modules, module_count, procparam);
     for(uint64_t i=0;i<ns;++i)memory_register_image(segments[i].address,segments[i].size,(uint32_t)segments[i].flags);
     if (!AddVectoredExceptionHandler(1, fault)) fail("cannot install diagnostic exception handler");
+    watch_start(); // after the handler: a hit before it would be an unhandled single-step
     if(linked&&!strcmp(argv[2],"--entry")){
         uint32_t sdk;memcpy(&sdk,image+procparam+16,4);
         if(gpu_start(sdk,(uint64_t)(uintptr_t)image))fail("graphics initialization failed");
