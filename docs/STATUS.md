@@ -22,6 +22,16 @@ in a kernel wait (scan `+0x6dadef`); the report stopped before the host (GPU) th
 `analyze_performance.py`. Note: the launcher runs with a large tuned environment from the
 inFAMOUS port (`kGameEnvironment` in `launcher/launcher.cpp`: unified memory, fast draw paths,
 parallel render, ...); `run_game.ps1` sets none of it, so its numbers are the untuned path.
+`-Profile`, 30 s in the opening cutscene (per frame, means; counters overlap across threads):
+7.2 FPS, 140 ms/frame; **GPU work only 24.6 ms**; command processor 124 ms; **page protection
+133 ms** (467 protect calls, 177 write faults); readback stalls 80 ms (13 reads, 4.3 MB);
+pipeline stalls 28 ms. So the cost is CPU-side write tracking and readbacks, not the GPU.
+That is what `ISS_UNIFIED_MEMORY` (`gpu/unified_memory.h`) removes for one heap, but its
+default range is inFAMOUS's heap B (`0x20000000`); GoT's direct mappings are at `0x1000000000`
+(384 MB), `0x1100000000` (332 MB: command rings, labels), `0x1200000000` (1.1 GB),
+`0x1500000000` (1.39 GB: the double-buffered per-frame data), `0x2000000000`, `0x3000000000`.
+Next experiments (no rebuild): `ISS_FAULT_WINDOW_KB=64`, then unified memory on
+`0x1500000000:0x56e00000` or `0x1100000000:0x14c00000`.
 title screen renders at ~13 FPS, no `DEVICE LOST`. So `b5500bd4` is confirmed as the GPU hang.
 Its effect is missing while skipped. Second run: after the spinner, right after the first
 `SKIP_CS` line and `Created native guest thread: GameState`, three threads (job workers, chain
