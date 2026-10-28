@@ -117,7 +117,16 @@ dumped SPIR-V file from 2026-10-20 and is not part of this work.
    is not resident or out of range), marked as a side effect in an override of
    `ir/microinstruction.cpp`, sets `uses_dma`; `LowerDynamicBufferAccess` handles 32-bit raw
    and formatted loads and stores (formatted: the instruction's 32-bit format, else 32-bit
-   channels; a store's 0.0 padding is not written). `ShaderBinaryVersion` 14. Not built yet.
+   channels; a store's 0.0 padding is not written). `ShaderBinaryVersion` 14.
+   Built and run: no visible change (sky, particles, a horse flickering in). No more `not
+   lowered` lines, but still thousands of `Clamped size from 2387256192 to 0` (`bdfc491f`) and
+   `1895825408 to 0` (`b5500bd4`), a different garbage size each run: their other V#s are
+   loaded from memory (`ReadConst`) that an earlier GPU pass of the same frame fills, and the
+   flattened user data reads it on the CPU when the dispatch is bound, before the GPU wrote it.
+   Now on `gameplay-diag`: `ISS_DMA_SHADERS=<hash>[,...]` (default `b5500bd4,bdfc491f`, empty
+   for none) re-reads every memory-loaded buffer V# of those shaders when the shader runs
+   (`ReadConst` flags 0) and sends their accesses through the DMA path above.
+   `ShaderBinaryVersion` 15. Not built yet.
 2. `b5500bd4` still binds one buffer it picks at run time with 0 bytes
    (`BindBuffers: Clamped size ... to 0 for stage 0xb5500bd4`; its V# comes from a Phi,
    `Sharp dword N comes from Phi`). DMA fixed the hang, but whatever that buffer feeds may be
@@ -172,6 +181,8 @@ only handles compute shaders.
 - `PROBE_EVENT` (exit code 21) carries the faulting address and registers; `-IrqLog` logs
   interrupts and compute fences (`GNM_IRQ`, `ASC_RELEASE_MEM`, `GFX_EOP`).
 - `ISS_SKIP_CS=<hash>` drops a compute shader to test whether it causes a hang.
+- `ISS_DMA_SHADERS=<hash>[,...]` reads those shaders' memory-loaded buffer V#s at run time
+  through DMA (default `b5500bd4,bdfc491f`; set it empty to turn it off).
 - `run.log` is written while the game runs; take it after the game exits. `gpu-crash.txt`
   is only rewritten by a new GPU crash: check its time.
 - `BB_DUMP_SHADERS=1` dumps shaders when they compile; cached ones are in

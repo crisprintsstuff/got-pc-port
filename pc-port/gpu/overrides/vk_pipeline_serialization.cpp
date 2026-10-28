@@ -30,7 +30,7 @@ extern thread_local unsigned long long recipe_hash;
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 14u; // 7: legacy multiply-add (v_mac_legacy_f32),
+static constexpr u32 ShaderBinaryVersion = 15u; // 7: legacy multiply-add (v_mac_legacy_f32),
                                                 // 8: upstream ADDC/ALIGNBIT/CVT_PK_U8/thread id fixes
                                                 // 9: v_readlane within the host subgroup
                                                 // 10: shuffles and lane reads of inactive lanes
@@ -38,6 +38,7 @@ static constexpr u32 ShaderBinaryVersion = 14u; // 7: legacy multiply-add (v_mac
                                                 // 12: DMA on by default (dynamic ReadConst)
                                                 // 13: run-time V# buffer reads through DMA
                                                 // 14: and their writes (WriteConstDynamic)
+                                                // 15: V#s loaded from memory read at run time (ISS_DMA_SHADERS)
 static constexpr u32 ShaderMetaVersion = 7u; // capture walker + relocation metadata
 static constexpr u32 LegacyShaderMetaVersion = 6u; // packed library made before SRT capture
 static constexpr u32 PipelineKeyVersion = 3u;

@@ -3,7 +3,11 @@
 
 #include <limits>
 #include <optional>
+#include <algorithm>
+#include <cstdlib>
+#include <string>
 #include <unordered_set>
+#include <vector>
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/info.h"
@@ -974,14 +978,47 @@ static u32 FormatComponents(AmdGpu::DataFormat format) {
     }
 }
 
-static bool LowerDynamicBufferAccess(const ResourceDiscovery& resource) {
+// ISS_DMA_SHADERS=<hex hash>[,...] (default: Ghost of Tsushima's b5500bd4,bdfc491f; empty for
+// none): in these shaders every buffer V# loaded from memory (ReadConst) is read again when the
+// shader runs, and its accesses go through DMA. Their other V#s sit in memory an earlier GPU pass
+// of the frame fills in: read on the CPU when the dispatch is bound (the flattened user data)
+// they were stale, a different garbage size each run ("Clamped size from 2387256192 to 0",
+// thousands a minute), after the Phi-sourced ones were already going through DMA.
+static bool ReadsSharpsAtRunTime(u64 pgm_hash) {
+    static const std::vector<u64> hashes = [] {
+        std::vector<u64> list;
+        const char* p = std::getenv("ISS_DMA_SHADERS");
+        std::string spec = p ? p : "b5500bd4,bdfc491f";
+        size_t at = 0;
+        while (at < spec.size()) {
+            const size_t end = std::min(spec.find(',', at), spec.size());
+            if (end > at) {
+                list.push_back(std::strtoull(spec.substr(at, end - at).c_str(), nullptr, 16));
+            }
+            at = end + 1;
+        }
+        return list;
+    }();
+    return std::find(hashes.begin(), hashes.end(), pgm_hash) != hashes.end();
+}
+
+static bool LowerDynamicBufferAccess(const ResourceDiscovery& resource, bool run_time_sharps) {
     IR::Inst& inst = *resource.user;
-    const auto& sharp = resource.sharps[0];
+    SharpReference sharp = resource.sharps[0];
     if (!EmulatorSettings.IsDirectMemoryAccessEnabled() || sharp.num_dwords < 4) {
         return false;
     }
-    if (ConstructSharpFetch<AmdGpu::Buffer>(sharp).summary !=
-        SharpFetch<AmdGpu::Buffer>::Summary::Invalid) {
+    bool from_memory = false;
+    if (run_time_sharps) {
+        for (u32 i = 0; i < 4; ++i) {
+            if (const IR::Inst* source = sharp.dwords[i].TryInst();
+                source && source->GetOpcode() == IR::Opcode::ReadConst) {
+                from_memory = true;
+            }
+        }
+    }
+    if (!from_memory && ConstructSharpFetch<AmdGpu::Buffer>(sharp).summary !=
+                            SharpFetch<AmdGpu::Buffer>::Summary::Invalid) {
         return false; // a binding can be made: the usual path
     }
     const auto inst_info = inst.Flags<IR::BufferInstInfo>();
@@ -1071,6 +1108,16 @@ static bool LowerDynamicBufferAccess(const ResourceDiscovery& resource) {
         return false; // typed raw access: needs format conversion
     }
     IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
+    if (from_memory) {
+        // The same loads again, unflattened (flags 0): read from guest memory when the shader
+        // runs. The flattened originals stay for their other users.
+        for (u32 i = 0; i < 4; ++i) {
+            if (const IR::Inst* source = sharp.dwords[i].TryInst();
+                source && source->GetOpcode() == IR::Opcode::ReadConst) {
+                sharp.dwords[i] = ir.ReadConst(source->Arg(0), IR::U32{source->Arg(1)});
+            }
+        }
+    }
     const IR::U32 dw0{sharp.dwords[0]};
     const IR::U32 dw1{sharp.dwords[1]};
     const IR::U32 num_records{sharp.dwords[2]};
@@ -1140,10 +1187,11 @@ void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resou
     // Pass 1: Track resource sharps
     Descriptors descriptors{info};
     std::unordered_set<const IR::Inst*> lowered;
+    const bool run_time_sharps = ReadsSharpsAtRunTime(info.pgm_hash);
     for (const auto& usage : resources) {
         IR::Inst& inst = *usage.user;
         if (IsBufferInstruction(inst)) {
-            if (LowerDynamicBufferAccess(usage)) {
+            if (LowerDynamicBufferAccess(usage, run_time_sharps)) {
                 lowered.insert(&inst);
                 continue;
             }
