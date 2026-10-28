@@ -6,9 +6,15 @@ next step is. Newest state first; keep the history short.
 ## Where the game stops
 
 The game boots, shows the loading spinner and starts loading the world (`tsu_2_-10_-14.xpps`
-and other terrain tiles). It then stops: the GPU thread hit `UNREACHABLE` in
-`PM4CmdReleaseMem::SignalFence` (`pm4_cmds.h:1075`), a compute RELEASE_MEM with DATA_SEL 0.
-Fix on `release-mem-irq-only`. Nothing playable is drawn yet.
+and other terrain tiles). With all four fix branches (latest run, 2026-10-28) it gets further into the
+world load and stops at an assertion in the renderer:
+
+    liverpool_to_vk.cpp:788 SurfaceFormat: Assertion Failed!
+    Unknown data_format=39 and num_format=11
+
+(while loading `tsu_0_-8_-15.xpps`, right after compiling `fs c269e87e` / `vs 84de8c8e`). A surface
+format missing from shadPS4's table (`SurfaceFormats()` in `liverpool_to_vk.cpp`). **Next fix.**
+Nothing playable is drawn yet.
 
 Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 dump, repo at
 `C:\Users\cuboi\Documents\GOT-port\got-pc-port`.
@@ -19,7 +25,7 @@ Each branch contains the one before it. Test the top one.
 
 | Branch | Fix | State |
 | --- | --- | --- |
-| `release-mem-irq-only` | Abort while loading the world: compute RELEASE_MEM with DATA_SEL 0 (interrupt only, no write) raises the interrupt instead of reaching `UNREACHABLE` (`gpu/overrides/liverpool.cpp`, both RELEASE_MEM paths) | Pushed, **not built or run yet** |
+| `release-mem-irq-only` | Abort while loading the world (`pm4_cmds.h:1075` UNREACHABLE): compute RELEASE_MEM with DATA_SEL 0 (interrupt only, no write) raises the interrupt (`gpu/overrides/liverpool.cpp`, both RELEASE_MEM paths) | Built and run: **fixed** (next stop is the surface format) |
 | `wave32-inactive-lanes` | GPU hang on `ps 361a48f5`, second cause: shuffles and lane reads of inactive lanes outside compute shaders fall back to the lane's own value / the first active lane's (`GuardLaneReadsToActiveLanes`); `ShaderBinaryVersion` 10 | Built and run: **fixed** (no `DEVICE LOST`; the SPIR-V shows both guards and validates) |
 | `asc-irq-coalesce` | Black-screen deadlock: merge a delayed compute interrupt into one already pending for the same equeue event (`gpu/overrides/gnmdriver.cpp`, `IrqDelayer::Push`) | Built and run: **fixed** (spinner reached, main thread no longer stuck) |
 | `wave32-readlane` | GPU hang on NVIDIA, first cause: `v_readlane` of lanes 32-63 outside compute shaders reads the same lane within the host subgroup (`gpu/overrides/recompiler.cpp`, `ClampReadLanesToSubgroup`); `ShaderBinaryVersion` 9 | Built and run: needed but **not enough**, same draw still hangs |
@@ -32,14 +38,12 @@ versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
 
 ## Next step
 
-Build `release-mem-irq-only` (`python pc-port/scripts/build_gpu.py --jobs 12`; no shader version
-change, so no full recompile) and run:
-
-    .\pc-port\scripts\run_game.ps1 -HangReport 40
-
-Then send the end of `run.log` (and `gpu-crash.txt` / the hang report if written). The four fix
-branches are stacked `wave32-readlane` <- `asc-irq-coalesce` <- `wave32-inactive-lanes` <-
-`release-mem-irq-only`; once a run gets past the world load, open PRs for them in that order.
+Merge the four fix PRs, stacked in this order: `wave32-readlane` <- `asc-irq-coalesce` <-
+`wave32-inactive-lanes` <- `release-mem-irq-only`. Then, on a branch from `main`, add
+`data_format=39, num_format=11` to the surface format table. Look up which GCN format 39 is
+(`AmdGpu::DataFormat` in shadPS4 `video_core/amdgpu/pixel_format.h`), and map it to a Vulkan
+format the NVIDIA card supports. `liverpool_to_vk.cpp` is not a port override yet: add one to
+`overrides` in `scripts/build_gpu.py`, or fall back where `SurfaceFormat` is called.
 If the black screen comes back, the deadlock is intermittent: read the node dump
 (`-Dump "+0x3bb64e0:0x20"`) and `GNM_IRQ_MERGED` in an `-IrqLog` run.
 
