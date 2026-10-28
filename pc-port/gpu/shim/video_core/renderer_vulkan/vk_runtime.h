@@ -82,6 +82,16 @@ public:
 
     void FlushBarriers();
 
+    /// DMA (shaders that read or write guest memory through the page table, not a binding):
+    /// their accesses are not ranges. A dispatch that reads that way waits for every write
+    /// recorded so far (writing: for every access); after one that writes, every buffer is
+    /// written until the next flush.
+    [[nodiscard]] bool DmaNeedsBarrier(bool dma_writes) const noexcept {
+        return dma_writes ? bool(memory_barrier.srcStageMask)
+                          : bool(memory_barrier.srcAccessMask);
+    }
+    void AccessDmaWrites(vk::PipelineStageFlags2 src_stage);
+
     /// ISS_UNIFIED_MEMORY: the imported heaps' buffers, whose reads are not recorded as ranges
     /// (a write to them is then always ordered after a barrier, see IsBufferAccessed).
     std::array<const VideoCore::Buffer*, 4> untracked_reads{};
@@ -148,6 +158,7 @@ private:
     std::array<u32, 64> resource_slots{};
     VideoCore::Image::Barriers image_barriers;
     vk::MemoryBarrier2 memory_barrier{};
+    bool dma_written{}; ///< AccessDmaWrites since the last flush
     u64 hazard_seq{1};
     u64 flush_seq{1};
 };

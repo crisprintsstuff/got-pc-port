@@ -116,6 +116,7 @@ struct Info : InfoPersistent {
         None = 0,
         Immediate = 1 << 0,
         Dynamic = 1 << 1,
+        DmaWrites = 1 << 2, ///< got-pc-port: WriteConstDynamic (stores through the page table)
     };
 
     struct Interpolation {

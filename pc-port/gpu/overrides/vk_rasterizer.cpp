@@ -129,6 +129,28 @@ uint64_t IssImageBase(); // bridge.cpp
 
 namespace Vulkan {
 
+namespace {
+// DMA dispatches (read_const_dynamic / WriteConstDynamic): their guest memory accesses are not
+// binding ranges, so IsBufferAccessed never saw them. With ISS_DMA_SHADERS, Ghost of Tsushima's
+// b5500bd4 and bdfc491f read and write the frame's buffers that way and the beach showed black
+// patches that followed the camera, in different spots every frame: those dispatches ran
+// unordered with the passes before and after them.
+bool WritesThroughDma(const Shader::Info& cs) {
+    return True(cs.readconst_types & Shader::Info::ReadConstType::DmaWrites);
+}
+void DmaBarrierBefore(Runtime& rt, const Shader::Info& cs) {
+    if (cs.uses_dma && rt.DmaNeedsBarrier(WritesThroughDma(cs))) {
+        rt.FlushBarriers();
+    }
+}
+void DmaAccessAfter(Runtime& rt, const Shader::Info& cs) {
+    if (cs.uses_dma && WritesThroughDma(cs)) {
+        rt.AccessDmaWrites(vk::PipelineStageFlagBits2::eComputeShader);
+    }
+}
+} // namespace
+
+
 thread_local Rasterizer::SplitThreadState Rasterizer::split_thread_state{};
 #include "draw_pipe_rasterizer.inl"
 
@@ -2178,12 +2200,14 @@ bool Rasterizer::RecordPreparedCompute(const ComputePipeline* pipeline,
     const auto cmdbuf = Sched().Recorder();
     BindPipelineLazy(Sched(), vk::PipelineBindPoint::eCompute, pipeline);
     const auto& stage = pipeline->GetStage(Shader::SwStage::Compute);
+    DmaBarrierBefore(Rt(), stage);
     Sched().ProfileDispatchBegin(stage.pgm_hash);
     if (bindings.indirect) {
         cmdbuf.dispatchIndirect(bindings.indirect->buffer->Handle(), bindings.indirect->offset);
     } else {
         cmdbuf.dispatch(inputs.cs.dim_x, inputs.cs.dim_y, inputs.cs.dim_z);
     }
+    DmaAccessAfter(Rt(), stage);
     Sched().ProfileDispatchEnd();
     DebugState.IncDispatch();
     for (const auto& item : bindings.buffers) {
@@ -3121,8 +3145,10 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         MarkDispatch(Sched(), cmdbuf, cs.pgm_hash, cs_program.dim_x, cs_program.dim_y,
                      cs_program.dim_z, 0);
     }
+    DmaBarrierBefore(Rt(), cs);
     Sched().ProfileDispatchBegin(cs.pgm_hash);
     cmdbuf.dispatch(cs_program.dim_x, cs_program.dim_y, cs_program.dim_z);
+    DmaAccessAfter(Rt(), cs);
     iss::feedback_join::Recorded();
     Sched().ProfileDispatchEnd();
     DebugState.IncDispatch();
@@ -3209,8 +3235,10 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
         MarkDispatch(Sched(), cmdbuf, pipeline->GetStage(Shader::SwStage::Compute).pgm_hash, 0, 0,
                      0, address + offset);
     }
+    DmaBarrierBefore(Rt(), pipeline->GetStage(Shader::SwStage::Compute));
     Sched().ProfileDispatchBegin(pipeline->GetStage(Shader::SwStage::Compute).pgm_hash);
     cmdbuf.dispatchIndirect(buffer->Handle(), base);
+    DmaAccessAfter(Rt(), pipeline->GetStage(Shader::SwStage::Compute));
     iss::feedback_join::Recorded();
     Sched().ProfileDispatchEnd();
     DebugState.IncDispatch();

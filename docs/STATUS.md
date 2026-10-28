@@ -126,7 +126,18 @@ dumped SPIR-V file from 2026-10-20 and is not part of this work.
    Now on `gameplay-diag`: `ISS_DMA_SHADERS=<hash>[,...]` (default `b5500bd4,bdfc491f`, empty
    for none) re-reads every memory-loaded buffer V# of those shaders when the shader runs
    (`ReadConst` flags 0) and sends their accesses through the DMA path above.
-   `ShaderBinaryVersion` 15. Not built yet.
+   `ShaderBinaryVersion` 15.
+   Built and run: those `Clamped size` lines are gone, the shore has shape and something
+   stands on the beach, but black patches follow the camera and jump to different spots every
+   frame. 282 `Accessed non-GPU cached memory` (DMA faults, each 64 KiB page of the
+   `0x2000000000` heap once, then resident: not the flicker). The cause found: DMA accesses
+   are not binding ranges, so `Runtime::IsBufferAccessed` never ordered those dispatches with
+   the passes before and after them. Now on `gameplay-diag`: a DMA dispatch flushes barriers
+   first when a write (for a DMA writer: any access) is pending; after a dispatch that writes
+   through DMA (`Info::ReadConstType::DmaWrites`, set for `WriteConstDynamic`),
+   `Runtime::AccessDmaWrites` makes every later `IsBufferAccessed` true until the next flush
+   (`DmaBarrierBefore` / `DmaAccessAfter` in `vk_rasterizer.cpp`). `ShaderBinaryVersion` 16.
+   Not built yet. The user has a save past the cutscene now (load it from the menu).
 2. `b5500bd4` still binds one buffer it picks at run time with 0 bytes
    (`BindBuffers: Clamped size ... to 0 for stage 0xb5500bd4`; its V# comes from a Phi,
    `Sharp dword N comes from Phi`). DMA fixed the hang, but whatever that buffer feeds may be

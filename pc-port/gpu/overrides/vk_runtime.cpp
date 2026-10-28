@@ -869,6 +869,9 @@ void Runtime::SetBackingSamples(VideoCore::Image* image, u32 num_samples, bool c
 
 bool Runtime::IsBufferAccessed(const VideoCore::Buffer* handle, u64 offset, u64 size,
                                bool check_read_access) {
+    if (dma_written) {
+        return true; // a DMA write may have touched any of it
+    }
     if (check_read_access && IsUntrackedReads(handle)) {
         // ISS_UNIFIED_MEMORY: its reads are not recorded; a write orders after all of them.
         return true;
@@ -931,6 +934,14 @@ void Runtime::AccessBuffer(const VideoCore::Buffer* handle, u64 offset, u64 size
     memory_barrier.srcAccessMask |= src_access & WRITE_MASK;
 }
 
+void Runtime::AccessDmaWrites(vk::PipelineStageFlags2 src_stage) {
+    AssertCpRecordingLane();
+    memory_barrier.srcStageMask |= src_stage;
+    memory_barrier.srcAccessMask |= vk::AccessFlagBits2::eShaderWrite;
+    dma_written = true;
+    ++hazard_seq;
+}
+
 void Runtime::FlushBarriers() {
     AssertCpRecordingLane();
     vk::DependencyInfo dep_info{};
@@ -962,6 +973,7 @@ void Runtime::FlushBarriers() {
 
     memory_barrier.srcStageMask = vk::PipelineStageFlagBits2::eNone;
     memory_barrier.srcAccessMask = vk::AccessFlagBits2::eNone;
+    dma_written = false;
 
     image_barriers.clear();
     for (auto& resource : resources) {

@@ -180,6 +180,7 @@ void Visit(Info& info, const IR::Inst& inst) {
         break;
     case IR::Opcode::WriteConstDynamic: // got-pc-port: a store through the DMA page table
         info.uses_dma = true;
+        info.readconst_types |= Info::ReadConstType::DmaWrites;
         break;
     case IR::Opcode::ReadConst:
         AddFlatbuf(info);
