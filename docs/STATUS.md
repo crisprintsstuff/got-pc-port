@@ -19,7 +19,16 @@ only the first faulting thread report (simultaneous faults interleaved their lin
 Third run (same build): no fault, but frozen on the brightness screen. The DualSense was found
 (`PAD selected name=DualSense`); the main thread spins at `+0x709942` (rdtsc wait, chain
 `+0x8b9dd8 +0x89c145 +0x893d12`, `rbx=0x110ce4c4`, `r14=0x14117168`), GPU threads idle. Likely
-waiting for something the skipped shader would have written. Waiting on a dump of `+0x709880`.
+waiting for something the skipped shader would have written.
+Fourth run (`probe-regs`): the fault is a NULL write (`r9=0`, `accessed=0x168`); `[entry+0x28]`
+is 0. Right after the first `SKIP_CS` both times, so most likely data the skipped shader writes
+(on the PS4 the GPU can write pointers the CPU reads). The freeze loop (`+0x709900`) runs jobs
+and spins until `[+0x285d8b4] == [+0x285d8b0]` (a completion count).
+**New lead on the hang itself:** `b5500bd4` reads memory through pointers computed at run time
+(22 dynamic `ReadConst`, `s_load` from a runtime address). With DMA off (default,
+`BB_DIRECT_MEMORY_ACCESS`), `EmitReadConst` turns each into a load of flatbuf dword 0: the shader
+runs on garbage. Test: `BB_DIRECT_MEMORY_ACCESS=1`, `BB_PIPELINE_CACHE=0` (the cache does not
+key on DMA), no skip.
 
 Previous runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
 compute shader `b5500bd4` starts running, though its SPIR-V now validates. Its waterfall loop
@@ -63,9 +72,9 @@ versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
 
 ## Next step
 
-1. With `$env:ISS_SKIP_CS = "b5500bd4"`, find out what happens past the title screen (input,
-   menus, loading a save) and fix the next stop.
-2. Real fix for `b5500bd4`: resolve Phi-sourced sharps (bindless T#/V# from a descriptor table) in
+1. Run without the skip, with `BB_DIRECT_MEMORY_ACCESS=1` and `BB_PIPELINE_CACHE=0`. If the
+   GPU no longer hangs, make DMA the default for this game and bump `ShaderBinaryVersion`.
+2. If it still hangs, the real fix for `b5500bd4`: resolve Phi-sourced sharps (bindless T#/V# from a descriptor table) in
   `ResourceDiscoverPass` / `FlattenExtendedUserdataPass` / `ResourcePatchingPass`, e.g. by
   binding the descriptor table as a buffer and building the descriptor in the shader.
 
