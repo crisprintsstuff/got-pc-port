@@ -5,17 +5,15 @@ next step is. Newest state first; keep the history short.
 
 ## Where the game stops
 
-Latest run (`sharp-source-readfirstlane`, 2026-10-28): no crash and no `Sharp dword` warning
-(shader `b5500bd4` was not reached this time). The game loads world tiles and character textures,
-then **hangs**: the main thread spins at `+0x709942` (same caller chain as the old job-wait loop,
-`+0x8b9dd8 +0x89c145 +0x893d12`). Its registers are those of an `rdtsc` microsecond wait (`r14`
-= `0x14117168`, the game's delay static; `r15` = `0x431bde82d7b634db`, the divide-by-1e6
-constant); `rbx = 0x110ce4c4` (image `+0x10ce4c4`) is the likely polled address. All job workers,
-`ProxySetSync` and the GPU threads are idle.
-
-The run before it aborted on `resource_discover_pass.cpp:277` (`IsSharpSource`) compiling
-compute shader `b5500bd4`; `sharp-source-readfirstlane` is the fix for that, still to be
-confirmed when that shader is reached. Nothing playable is drawn yet.
+Latest run (`sharp-source-readfirstlane`, 2026-10-28): the game reached compute shader `b5500bd4`
+and its T# dwords 0-3 **come from Phi**, not `ReadFirstLane` (`Sharp dword N comes from Phi`): the
+descriptor is chosen in a loop or branch, the shape of a waterfall loop over per-lane textures.
+The logged skip let it compile; 9.5 s later the GPU hung (`DEVICE LOST`, no graphics command in
+flight, so probably a compute queue). The main-thread spin at `+0x709942` seen in the run before
+is likely the CPU waiting on that GPU work. **Next:** the shader's cached SPIR-V
+(`pc-port\out\user\gpu-14\CUSA11456\0x00000000b5500bd4_0.spv`): where the Phi comes from,
+and whether the loop can exit on a 32-lane GPU (compare the `ps 361a48f5` hang in Findings).
+Nothing playable is drawn yet.
 
 Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 dump, repo at
 `C:\Users\cuboi\Documents\GOT-port\got-pc-port`.
@@ -24,7 +22,7 @@ Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 d
 
 | Branch | Fix | State |
 | --- | --- | --- |
-| `sharp-source-readfirstlane` (on `bc5-ubnorm-nz`) | `IsSharpSource` assertion in `ResourceDiscoverPass`: T#/S# dwords read through `ReadFirstLane` are taken from its source, as V# dwords already were; any other unknown source is logged (`Sharp dword N comes from <opcode>`) and skipped instead of aborting. New override `gpu/overrides/resource_discover_pass.cpp` | Built and run; the shader it fixes was not reached in that run |
+| `sharp-source-readfirstlane` (on `bc5-ubnorm-nz`) | `IsSharpSource` assertion in `ResourceDiscoverPass`: T#/S# dwords read through `ReadFirstLane` are taken from its source, as V# dwords already were; any other unknown source is logged (`Sharp dword N comes from <opcode>`) and skipped instead of aborting. New override `gpu/overrides/resource_discover_pass.cpp` | Built and run: no abort, but the sources are Phi (not `ReadFirstLane`); the shader then likely hung the GPU |
 | `bc5-ubnorm-nz` (from `main`, PR #13) | `SurfaceFormat` assertion (data_format=39 BC5, num_format=11 `UbnormNz`): `UbnormNz` remapped to `Unorm` with the `UnormToUbnorm` conversion, like `Ubnorm`, in a shim copy of `video_core/amdgpu/pixel_format.h` (`gpu/shim` shadows shadPS4 headers) | Built and run: **fixed** (world tiles load) |
 
 Merged 2026-10-28 (#8-#11, in this order of the stack):
