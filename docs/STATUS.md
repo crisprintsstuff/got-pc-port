@@ -5,14 +5,17 @@ next step is. Newest state first; keep the history short.
 
 ## Where the game stops
 
-With `bc5-ubnorm-nz` (latest run, 2026-10-28) the game loads the world tiles and goes on to load
-character textures (`hero_samurai_*`, `shimura_*`, `hero_head_mtl`): frames presented up to 1479
-at 67 s. Then the process stopped with **nothing in `run.log`**: no assertion, no `GPU_FATAL`, no
-`DEVICE LOST`, no guest crash report; the log ends mid-stream. That pattern points to a death that
-skips the port's handlers (stack overflow, fast-fail) and loses buffered output. **Next:** the
-exit code `run_game.ps1` prints (`Exited with code ...`) and the Windows Event Viewer
-Application Error entry for `iss-probe.exe` (exception code, faulting module and offset).
-Nothing playable is drawn yet.
+With `bc5-ubnorm-nz` the game loads the world tiles and character textures (`hero_samurai_*`,
+`shimura_*`). About 36 s in, the GPU thread aborts (exit code `0xC0000409`) on an assertion while
+compiling compute shader `b5500bd4`:
+
+    resource_discover_pass.cpp:277 Assertion Failed!   (ASSERT(IsSharpSource(source)))
+
+A descriptor dword comes from neither user data nor a constant read. This happens in
+`ResourceDiscoverPass`, before the port's lane passes, so it is not caused by them. Fix on
+`sharp-source-readfirstlane`, **not built or run yet**. (The run before this one was stopped with
+Ctrl+C at the same point and looked like a silent crash; it was not.) Nothing playable is drawn
+yet.
 
 Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 dump, repo at
 `C:\Users\cuboi\Documents\GOT-port\got-pc-port`.
@@ -21,7 +24,8 @@ Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 d
 
 | Branch | Fix | State |
 | --- | --- | --- |
-| `bc5-ubnorm-nz` (from `main`) | `SurfaceFormat` assertion (data_format=39 BC5, num_format=11 `UbnormNz`): `UbnormNz` remapped to `Unorm` with the `UnormToUbnorm` conversion, like `Ubnorm`, in a shim copy of `video_core/amdgpu/pixel_format.h` (`gpu/shim` shadows shadPS4 headers) | Built and run: **fixed** (world tiles load) |
+| `sharp-source-readfirstlane` (on `bc5-ubnorm-nz`) | `IsSharpSource` assertion in `ResourceDiscoverPass`: T#/S# dwords read through `ReadFirstLane` are taken from its source, as V# dwords already were; any other unknown source is logged (`Sharp dword N comes from <opcode>`) and skipped instead of aborting. New override `gpu/overrides/resource_discover_pass.cpp` | Pushed, **not built or run yet** |
+| `bc5-ubnorm-nz` (from `main`, PR #13) | `SurfaceFormat` assertion (data_format=39 BC5, num_format=11 `UbnormNz`): `UbnormNz` remapped to `Unorm` with the `UnormToUbnorm` conversion, like `Ubnorm`, in a shim copy of `video_core/amdgpu/pixel_format.h` (`gpu/shim` shadows shadPS4 headers) | Built and run: **fixed** (world tiles load) |
 
 Merged 2026-10-28 (#8-#11, in this order of the stack):
 
@@ -40,15 +44,15 @@ versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
 
 ## Next step
 
-Find what ended the last run. It left nothing in `run.log`, so get:
+Build `sharp-source-readfirstlane` (`python pc-port/scripts/build_gpu.py --jobs 12`; no shader
+version change: the shaders it affects used to abort before reaching the cache) and run:
 
-- the exit code from the PowerShell window (`Exited with code ...`): `-1073741571`
-  (0xC00000FD) is a stack overflow, `-1073740791` (0xC0000409) a fast-fail;
-- the Event Viewer entry (Windows Logs > Application, Error, `iss-probe.exe`): exception code,
-  faulting module and offset.
+    .\pc-port\scripts\run_game.ps1 -HangReport 40
 
-A guest stack overflow points at the runtime's thread stack sizes (`pc-port/src/threads.c`); a
-fault in `iss-gpu.dll` gives an offset to symbolize (`scripts/symbolize.py`).
+Then search `run.log` for `Sharp dword`. If it is there, the source is something other than
+`ReadFirstLane` (the opcode is named), and that shader may still bind the wrong resource. Send
+the end of `run.log` either way. Exit code `-1073740791` (`0xC0000409`) is the port's own abort
+(`GPU_FATAL` in `run.log`), not a Windows-level crash.
 If the black screen comes back, the deadlock is intermittent: read the node dump
 (`-Dump "+0x3bb64e0:0x20"`) and `GNM_IRQ_MERGED` in an `-IrqLog` run.
 
