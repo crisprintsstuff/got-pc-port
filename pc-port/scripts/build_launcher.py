@@ -32,7 +32,9 @@ def build(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path,
-                        default=ROOT / 'out' / 'launcher-staging' / 'Ghost of Tsushima Launcher.exe')
+                        # The repository root: from a checkout the launcher finds the port built in
+                        # pc-port/out, the prepared image and game_dir.txt (launcher.cpp, g_repo).
+                        default=ROOT.parent / 'Ghost of Tsushima Launcher.exe')
     args = parser.parse_args()
     try:
         build(args.output.resolve())

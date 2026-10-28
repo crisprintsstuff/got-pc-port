@@ -8,7 +8,9 @@
 // (CUSA11456) folder. The window art comes from that folder too: sce_sys\pic1.png (the crow, as on
 // the loading screen) behind the menu, darkened on the left. The logo is <root>\assets\logo.png
 // when present, else it is cut out of sce_sys\icon0.png (its black background made transparent).
-// PLAY starts bin\iss-probe.exe with the environment of the tested build (play_porte.py, porte-x)
+// In a checkout of the repository (the launcher in the repository root or below it) it uses the
+// port built in pc-port\out, its prepared image and game_dir.txt when it has none of its own.
+// PLAY starts iss-probe.exe with the environment the game was tested with (kGameEnvironment)
 // plus the Settings, hides this window, and comes back when the game exits. The accumulated shader
 // cache follows play_v1_guard.py: each session plays on a copy, promoted after a clean session.
 #define NOMINMAX
@@ -51,6 +53,9 @@ namespace {
 // Paths and settings
 // ---------------------------------------------------------------------------------------------
 fs::path g_root, g_bin, g_user;
+// A checkout of the repository that holds the launcher (empty when it runs from a portable
+// folder): the port built there (pc-port\out) and the launcher's assets are used from it.
+fs::path g_repo, g_assets;
 
 struct Choice {
     const wchar_t* label;
@@ -281,54 +286,14 @@ std::wstring PickFolder(HWND owner) {
 // ---------------------------------------------------------------------------------------------
 // Launching the game
 // ---------------------------------------------------------------------------------------------
-// The environment of the tested build (play_porte.py on porte-vsync1, 2026-10-19), without the
-// paths and diagnostics of the development runs. The game's compute shaders are compiled before
-// the first session (ISS_AOT_COMPUTE, the loading screen's "Preparing shaders"), and the graphics
-// pipelines listed by the shader recipes (shaders/recipes) are rebuilt from the user's own game
-// files (ISS_AOT_RECIPES).
+// The environment Ghost of Tsushima was tested with (pc-port\scripts\run_game.ps1, the opening
+// cutscene at its 30 FPS cap, 2026-10-28). The inFAMOUS port's tuned set (fast draw paths, native
+// passes, shader recipes, a 240 Hz vblank, the command processor pinned to CPU 14, unified memory
+// on inFAMOUS's heap at 0x20000000) is not used: none of it was tried with this game.
+// Unified memory covers the 1.39 GB heap the game maps at 0x1500000000 (its per-frame data).
 const char* const kGameEnvironment[][2] = {
-    {"BB_VBLANK_HZ", "240"}, {"ISS_AOT_COMPUTE", "auto"}, {"ISS_AOT_INDEX", "auto"},
-    {"ISS_AOT_RECIPES", "1"}, {"ISS_AOT_WAIT", "1"},
-    {"ISS_ASYNC_COMPUTE", "0"}, {"ISS_BARRIER_POOL", "1"},
-    {"ISS_CAPTURE_FRAMES", "0"}, {"ISS_CAPTURE_OVERLAY", "0"}, {"ISS_CLAMP_CACHE_FIRST", "1"},
-    {"ISS_COMMAND_TRACE", "0"}, {"ISS_COMPUTE_FAIRNESS", "1"}, {"ISS_COMPUTE_PHASES", "0"},
-    {"ISS_CPU_BUNDLE_INDEX_ONCE", "0"}, {"ISS_CPU_BUNDLE_SPV_VERIFIED", "0"}, {"ISS_CP_CPU", "14"},
-    {"ISS_CP_SPLIT", "0"}, {"ISS_DEEP_PROFILE", "0"}, {"ISS_DESCRIPTOR_DELTAS", "0"},
-    {"ISS_DESCRIPTOR_FAST_PATH", "1"}, {"ISS_DIAGNOSTIC_SESSION", "0"}, {"ISS_DRAW_PIPE", "0"},
-    {"ISS_ENGINE_MARKERS", "0"}, {"ISS_ENGINE_STATS", "0"}, {"ISS_FAST_DRAW", "1"},
-    {"ISS_FAST_DYN_EXT", "1"}, {"ISS_FAST_LEAN", "1"}, {"ISS_FAST_PROGRAM_ALIAS", "1"},
-    {"ISS_FAST_REBIND", "1"}, {"ISS_FAST_STATE_SWITCH", "1"}, {"ISS_FAST_SWITCH", "1"},
-    {"ISS_FAULT_WINDOW_KB", "64"}, {"ISS_FEEDBACK_ARENA", "0"}, {"ISS_FEEDBACK_EARLY_SUBMIT", "0"},
-    {"ISS_FEEDBACK_IDENTITY", "0"}, {"ISS_FEEDBACK_JOIN", "0"}, {"ISS_FEEDBACK_PAGE_READBACK", "0"},
-    {"ISS_FEEDBACK_TRACE", "0"}, {"ISS_G4_FEEDBACK_PROBE", "0"}, {"ISS_GPU", "1"},
-    {"ISS_GPU_HAZARD_DIAG", "0"}, {"ISS_GPU_PROFILE", "0"}, {"ISS_HYBRID_BENCH_HIDDEN", "0"},
-    {"ISS_HYBRID_FAMILY_PROFILE", "0"}, {"ISS_INDIRECT_GUARD", "0"}, {"ISS_LAZY_PIPELINES", "1"},
-    {"ISS_MAPPING_CACHE", "1"}, {"ISS_MAPPING_INDEX", "1"}, {"ISS_MINIMAL_LOGS", "0"},
-    {"ISS_NATIVE_CITY_FETCH", "0"}, {"ISS_NATIVE_CPU_DRAWS", "0"}, {"ISS_NATIVE_DEPTH_RUN", "0"},
-    {"ISS_NATIVE_DRAW_STATE", "0"}, {"ISS_NATIVE_DRAW_STATE_VERIFY", "0"},
-    {"ISS_NATIVE_FEEDBACK_PROBE", "0"}, {"ISS_NATIVE_GBUFFER_SETS", "1"},
-    {"ISS_NATIVE_GEOMETRY", "0"}, {"ISS_NATIVE_GEOMETRY_STATS", "0"},
-    {"ISS_NATIVE_INDEXED_BATCH", "0"}, {"ISS_NATIVE_INSTANCED_BATCH", "0"},
-    {"ISS_NATIVE_ASC_ASYNC", "1"}, {"ISS_NATIVE_INSTANCED_FEATURE", "1"}, {"ISS_NATIVE_ITEMS", "0"}, {"ISS_NATIVE_ITEM_RANGES", "0"},
-    {"ISS_NATIVE_MATERIALS", "1"}, {"ISS_NATIVE_MEMORY_REPORT", "0"}, {"ISS_NATIVE_PASSES", "1"},
-    {"ISS_NATIVE_PASSES_ASYNC_SCAN", "1"}, {"ISS_NATIVE_PASSES_DYNAMIC", "1"},
-    {"ISS_NATIVE_PASSES_SUBMIT", "1"}, {"ISS_NATIVE_READBACK_PAGES", "0"},
-    {"ISS_NATIVE_REDUCTION", "0"}, {"ISS_NATIVE_SHADOW", "0"}, {"ISS_NATIVE_SHADOW_STATS", "0"},
-    {"ISS_NATIVE_SHADOW_VERIFY", "0"}, {"ISS_NATIVE_VERIFY", "0"}, {"ISS_PARALLEL_RENDER", "1"},
-    {"ISS_PIPELINE_EVENTS", "0"}, {"ISS_PIPELINE_STATE_REUSE", "0"},
-    {"ISS_PIPELINE_STATE_REUSE_STATS", "0"}, {"ISS_PIPELINE_STATE_REUSE_VERIFY", "0"},
-    {"ISS_PRELOAD_BACKGROUND", "1"}, {"ISS_PREWARM_LARGE_UPLOAD", "0"},
-    {"ISS_PROBE_HOST_IMPORT", "0"}, {"ISS_PROFILE_CITY_DRAW_GPU", "0"}, {"ISS_READBACK_DIAG", "0"},
-    {"ISS_REAL_OCCLUSION", "1"}, {"ISS_RENDER_REUSE", "1"}, {"ISS_RING_BARRIERS", "1"},
-    {"ISS_SECONDARY_BATCH_PROBE", "0"}, {"ISS_SMALL_READ_MEMO", "0"}, {"ISS_SPEC_TRANSLATE", "1"},
-    {"ISS_STAGE_MEMO", "1"}, {"ISS_STAGE_MEMO_LOOSE", "1"}, {"ISS_STAGE_MEMO_TEXEL", "1"},
-    {"ISS_SUBMIT_EVERY", "1000"}, {"ISS_TEXTURE_LOOKUP_MEMO", "0"},
-    {"ISS_TEXTURE_LOOKUP_MEMO_STATS", "0"}, {"ISS_THREAD_PRIORITY", "1"}, {"ISS_TIMELINE", "0"},
-    {"ISS_TLS_PATCH", "1"}, {"ISS_TRACE_READBACK", "0"},
-    {"ISS_TUNING", "async_written_uploads=1,scout=1,scout_fast=1,bind_prefetch=1"},
-    {"ISS_UNIFIED_FLUSH_IRQ", "0"}, {"ISS_UNIFIED_FLUSH_US", "1000"}, {"ISS_UNIFIED_MEMORY", "1"},
-    {"ISS_UPLOAD_WORKER", "1"}, {"ISS_VISUAL_SEQUENCE", "0"}, {"SHADPS4_FAST_STAGE_LOOKUP", "1"},
-    {"SHADPS4_PARALLEL_PRELOAD", "1"}, {"SHADPS4_REUSE_DESCRIPTOR_STORAGE", "1"},
+    {"ISS_GPU", "1"}, {"ISS_TLS_PATCH", "1"}, {"ISS_FAULT_WINDOW_KB", "64"},
+    {"ISS_UNIFIED_MEMORY", "1"}, {"ISS_UNIFIED_RANGE", "0x1500000000:0x56e00000"},
 };
 
 constexpr int MinPlayedFrames = 600; // a session that played (not only the preload and title)
@@ -537,8 +502,18 @@ void KeepNewest(const fs::path& dir, size_t keep) {
     }
 }
 
+// The repository's prepared image (pc-port\scripts\prepare.py and link_modules.py write it to
+// pc-port\out) when the launcher runs from a checkout and has not prepared one itself.
+fs::path RepoImage() {
+    std::error_code ec;
+    if (g_repo.empty() || fs::is_regular_file(g_user / "prepared" / "boot-linked.bin", ec)) return {};
+    const fs::path image = g_repo / "pc-port" / "out" / "boot-linked.bin";
+    return fs::is_regular_file(image, ec) ? image : fs::path{};
+}
+
 fs::path PreparedImage() {
-    return PathOption("prepared_image", g_user / "prepared" / "boot-linked.bin");
+    const fs::path repo = RepoImage();
+    return PathOption("prepared_image", repo.empty() ? g_user / "prepared" / "boot-linked.bin" : repo);
 }
 
 // The prepared image exists and was made from the current game folder (or is a dev override).
@@ -546,7 +521,7 @@ bool PreparedReady() {
     std::error_code ec;
     const fs::path image = PreparedImage();
     if (!fs::is_regular_file(image, ec)) return false;
-    if (g_extra.count("prepared_image")) return true;
+    if (g_extra.count("prepared_image") || !RepoImage().empty()) return true;
     std::ifstream f(image.wstring() + L".source");
     std::string source;
     std::getline(f, source);
@@ -635,7 +610,7 @@ std::wstring LaunchGame(HWND notify) {
     if (const auto why = CheckGameDir(g_game_dir); !why.empty()) return why;
     const fs::path exe = g_bin / "iss-probe.exe", image = PreparedImage();
     if (!fs::is_regular_file(exe, ec) || !fs::is_regular_file(g_bin / "iss-gpu.dll", ec))
-        return L"bin\\iss-probe.exe or bin\\iss-gpu.dll is missing.";
+        return L"iss-probe.exe or iss-gpu.dll is missing: build the port (pc-port\\out) or put bin\\ next to the launcher.";
     if (!fs::is_regular_file(image, ec))
         return L"The game files are not prepared yet (user\\prepared\\boot-linked.bin).";
     const fs::path library = ShaderLibrary();
@@ -738,7 +713,7 @@ void LoadArt() {
     const fs::path sys = fs::path(g_game_dir) / "sce_sys";
     auto bg = std::make_unique<Bitmap>((sys / "pic1.png").c_str());
     if (bg->GetLastStatus() == Ok) g_background = std::move(bg);
-    auto logo_file = std::make_unique<Bitmap>((g_root / "assets" / "logo.png").c_str());
+    auto logo_file = std::make_unique<Bitmap>((g_assets / "logo.png").c_str());
     const bool has_logo = logo_file->GetLastStatus() == Ok;
     if (has_logo) g_logo = std::move(logo_file);
     Bitmap icon((sys / "icon0.png").c_str());
@@ -937,7 +912,7 @@ const FontFamily* Family() {
 
 void LoadFonts() {
     g_fonts = std::make_unique<PrivateFontCollection>();
-    const fs::path font = g_root / "assets" / "fonts" / "Oswald.ttf";
+    const fs::path font = g_assets / "fonts" / "Oswald.ttf";
     if (g_fonts->AddFontFile(font.c_str()) != Ok || g_fonts->GetFamilyCount() < 1) return;
     int found = 0;
     auto families = std::make_unique<FontFamily[]>(1);
@@ -2085,6 +2060,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     g_root = fs::path(self).parent_path();
     g_bin = g_root / "bin";
     g_user = g_root / "user";
+    g_assets = g_root / "assets";
+    // In a checkout (the launcher in the repository root, or anywhere below it): the port built in
+    // pc-port\out when there is no bin\ next to the launcher, and pc-port\launcher\assets.
+    {
+        std::error_code ec;
+        for (fs::path at = g_root; !at.empty(); at = at.parent_path()) {
+            if (fs::is_regular_file(at / "pc-port" / "out" / "iss-probe.exe", ec)) {
+                g_repo = at;
+                break;
+            }
+            if (at == at.parent_path()) break;
+        }
+        if (!g_repo.empty()) {
+            if (!fs::is_regular_file(g_bin / "iss-probe.exe", ec)) g_bin = g_repo / "pc-port" / "out";
+            if (!fs::is_directory(g_assets / "fonts", ec)) g_assets = g_repo / "pc-port" / "launcher" / "assets";
+        }
+    }
     // launcher.exe --finish <log dir> <cache work> <game pid>: the hidden watcher of a session.
     {
         int argc = 0;
@@ -2127,6 +2119,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }
     const bool first_run = !fs::exists(ConfigPath());
     LoadConfig();
+    // In a checkout, the game folder run_game.ps1 uses (first line of pc-port\out\game_dir.txt).
+    if (g_game_dir.empty() && !g_repo.empty()) {
+        std::ifstream f(g_repo / "pc-port" / "out" / "game_dir.txt");
+        std::string line;
+        if (std::getline(f, line)) {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            g_game_dir = Widen(line);
+        }
+    }
     if (first_run && SmallScreen()) g_settings[0].index = 1; // the game fullscreen on a Deck
     LoadFonts();
     LoadXInput();

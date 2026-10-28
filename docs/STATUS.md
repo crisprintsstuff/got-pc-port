@@ -5,257 +5,123 @@ next step is. Newest state first; keep the history short.
 
 ## Where the game stops
 
-**Title screen reached** (2026-10-28, `skip-cs-diagnostic` with `ISS_SKIP_CS=b5500bd4`): the mask
+**Opening cutscene at 30 FPS.** On the test machine the game boots, shows its menus in English,
+and plays the opening cutscene correctly at its 30 FPS cap (2026-10-28). **Right after the
+cutscene** (first gameplay on the beach) only the sky, stars and a flat sea/ground plane are drawn,
+no terrain detail, characters or objects, at about 1.3 FPS. Not analysed yet; one suspect is
+`b5500bd4` (next step 2), if it is the GPU-driven culling that decides what gets drawn.
 
-**Opening cutscene at 30 FPS** (2026-10-28, `irq-burst-merge`, real unmap, unified memory on
-`0x1500000000:0x56e00000`): renders correctly at the game's 30 FPS cap. `run_game.ps1` now sets
-`ISS_FAULT_WINDOW_KB=64`, `ISS_UNIFIED_MEMORY=1` and that range by default. Next: play past the
-cutscene and fix what comes up; the launcher (`kGameEnvironment`) still has inFAMOUS's
-settings and should get these instead.
+Test machine: Windows, NVIDIA RTX 3060 (32-lane subgroups), Ryzen 7, the author's patch 2.18
+dump, repo at `C:\Users\cuboi\Documents\GOT-port\got-pc-port`.
 
-**In the game world** (2026-10-28, `irq-burst-merge` with `ISS_ASC_SEL3_IRQ=0`, DMA on,
-`ISS_WATCH` on): past the title screen into the game, about 7 FPS, text in Portuguese. Now the
-defaults: compute INT_SEL 3 raises no interrupt (`ISS_ASC_SEL3_IRQ=1` restores it) and the
-system language is English (`ISS_LANGUAGE`, it was 17 = Brazilian Portuguese from inFAMOUS).
-Then two runs with the shader cache back on hung the GPU on `b5500bd4` again, with no
-`Enabling DMA` line: the cache handed back the binaries compiled earlier without DMA (DMA is not
-part of the cache key). So DMA is what fixes `b5500bd4`. Now DMA is on by default
-(`BB_DIRECT_MEMORY_ACCESS=0` turns it off) and `ShaderBinaryVersion` is 12, so old binaries are
-recompiled. With the cache rebuilt: settings menu and the opening cutscene in English, but
-still about 7 FPS on the second run. Hang report: all job workers idle, the main thread always
-in a kernel wait (scan `+0x6dadef`); the report stopped before the host (GPU) threads again.
-`run_game.ps1` now writes `frames.csv` (and `-Profile` adds GPU timestamps) for
-`analyze_performance.py`. Note: the launcher runs with a large tuned environment from the
-inFAMOUS port (`kGameEnvironment` in `launcher/launcher.cpp`: unified memory, fast draw paths,
-parallel render, ...); `run_game.ps1` sets none of it, so its numbers are the untuned path.
-`-Profile`, 30 s in the opening cutscene (per frame, means; counters overlap across threads):
-7.2 FPS, 140 ms/frame; **GPU work only 24.6 ms**; command processor 124 ms; **page protection
-133 ms** (467 protect calls, 177 write faults); readback stalls 80 ms (13 reads, 4.3 MB);
-pipeline stalls 28 ms. So the cost is CPU-side write tracking and readbacks, not the GPU.
-That is what `ISS_UNIFIED_MEMORY` (`gpu/unified_memory.h`) removes for one heap, but its
-default range is inFAMOUS's heap B (`0x20000000`); GoT's direct mappings are at `0x1000000000`
-(384 MB), `0x1100000000` (332 MB: command rings, labels), `0x1200000000` (1.1 GB),
-`0x1500000000` (1.39 GB: the double-buffered per-frame data), `0x2000000000`, `0x3000000000`.
-Next experiments (no rebuild): `ISS_FAULT_WINDOW_KB=64`, then unified memory on
-`0x1500000000:0x56e00000` or `0x1100000000:0x14c00000`.
-Results (opening cutscene, `-Profile`): fault window 64 KB: 11.7 FPS (protect 95 ms, faults
-104). Plus unified `0x1500000000:0x56e00000`: **28 FPS** (the game's 30 cap; protect 4 ms,
-faults 12, readbacks 0.01 MB), but it crashed after the settings screens. Unified
-`0x1100000000:0x14c00000`: 15 FPS, also crashed there. `run_game.ps1` now sets
-`ISS_FAULT_WINDOW_KB=64`. Next: the crash with unified memory on `0x1500000000`.
-That crash (rerun, reached the cutscene, then 4 FPS and exit 21): the file reader (FaWorkerIo1,
-memcpy in VCRUNTIME140) wrote into `0x1420d70000`, which was never mapped. The game streams
-textures through 64 KiB direct mappings in `0x14xxxxxxxx` that it unmaps and maps again;
-`memory_unmap` was a no-op ("Unmap not implemented, range kept"), so a fixed remap at a freed
-address failed (`Direct mapping failed: hint=0x1428990000`). Not caused by unified memory: the
-slow runs never got that far. Fix on `irq-burst-merge`: real unmap for arena mappings
-(`src/memory.c`: the view goes back to a placeholder merged with its free neighbours, the table
-slot is freed and reused, per-thread lookup caches follow `mapping_generation`), and the GPU is
-told first (`iss_gpu_unmap` -> `Rasterizer::UnmapMemory`, `AddressSpace::Unregister`). Test in
-`tests/runtime_test.c` (unmap, then a fixed map at the same address).
-title screen renders at ~13 FPS, no `DEVICE LOST`. So `b5500bd4` is confirmed as the GPU hang.
-Its effect is missing while skipped. Second run: after the spinner, right after the first
-`SKIP_CS` line and `Created native guest thread: GameState`, three threads (job workers, chain
-`+0x8030bc +0x80306e +0x2a1e90 +0x2a162d`) fault at the same instruction, `+0xb64121`
-(access violation, exit code 21; `rcx=0x3f000000` (0.5f), `r14=0x111c9270`, `r15=0x13ce4b20`,
-`r13=0`). From the code dump: a loop over the 0x30-byte entries of the table at `[obj+0xf348]`
-(`obj = [0x13ce4b20] = 0x13ba7280`, the `ProxySetSync` object) copies shader parameters; for type
-`0x1b` it writes a dword (here 0.5f) to `[entry+0x28]+0x168`, and `[entry+0x28]` (`r9`) is bad.
-`PROBE_EVENT` did not print `r9`; `probe-regs` adds `r8`-`r11`, the accessed address, and lets
-only the first faulting thread report (simultaneous faults interleaved their lines).
-Third run (same build): no fault, but frozen on the brightness screen. The DualSense was found
-(`PAD selected name=DualSense`); the main thread spins at `+0x709942` (rdtsc wait, chain
-`+0x8b9dd8 +0x89c145 +0x893d12`, `rbx=0x110ce4c4`, `r14=0x14117168`), GPU threads idle. Likely
-waiting for something the skipped shader would have written.
-Fourth run (`probe-regs`): the fault is a NULL write (`r9=0`, `accessed=0x168`); `[entry+0x28]`
-is 0. Right after the first `SKIP_CS` both times, so most likely data the skipped shader writes
-(on the PS4 the GPU can write pointers the CPU reads). The freeze loop (`+0x709900`) runs jobs
-and spins until `[+0x285d8b4] == [+0x285d8b0]` (a completion count).
-**New lead on the hang itself:** `b5500bd4` reads memory through pointers computed at run time
-(22 dynamic `ReadConst`, `s_load` from a runtime address). With DMA off (default,
-`BB_DIRECT_MEMORY_ACCESS`), `EmitReadConst` turns each into a load of flatbuf dword 0: the shader
-runs on garbage. Test: `BB_DIRECT_MEMORY_ACCESS=1`, `BB_PIPELINE_CACHE=0` (the cache does not
-key on DMA), no skip.
-Fifth run (DMA on, cache off, no skip): black screen, then the same NULL fault at `+0xb64121`
-(same table `r11=0x1003f20840`, entry 0), before `b5500bd4` was even compiled. So the fault is
-**not** caused by the skip: it is a race that hits at different times (sometimes after the
-brightness screen). The table lies in the first direct mapping (`0x1000000000`, physical 0); no
-two direct mappings alias. `probe-regs` adds `ISS_WATCH=<addr>,...`: hardware write watchpoints
-that log every write (`WATCH` lines) to `[entry+0x28]` of entries 0, 18 and 34
-(`0x1003f20868,0x1003f20bc8,0x1003f20ec8`).
-Sixth run (`ISS_WATCH` on those three): no fault this time (the watchpoints change the timing);
-it reached `b5500bd4` and hung the GPU as before (DMA was off). The writes: job functions clear
-`[entry+0x28]` (`+0xb61ac4`, also `+0xb6191a`) and then set it (`+0xb63726`), always the same
-thread for one clear/set pair, from the job runner (`+0x8030bc`). The values alternate between
-two buffers (`0x150340d410` / `0x150260d410`): double-buffered per-frame data in the
-`0x1500000000` direct mapping. Pairs for alternate buffers come from different threads a few
-log lines apart, so the next frame's set-up job runs while this frame's jobs still write
-through the pointer (`+0xb64121`): frames overlap. Fits the sync node at `0x13bb64e0` being
-over-signalled (count below 0 in the black-screen hangs) and so completing early. Next run
-watches the node too: `ISS_WATCH=13bb64e0,1003f20868`.
-Seventh run (that watch, DMA on, cache off): the NULL fault again, before `b5500bd4`. The node
-(8 bytes: low dword state, high dword count) cycles, all on the main thread: arm (`+0x8b3e97`
-count +1, `+0x8b4004` state 1), one signal from the frame job (`+0x803a22`/`+0x803a90` fire,
-called from `+0x8b4217` on main or `+0x8030bc` on a worker), reset (`+0x8038f7`, writes 0).
-`ProxySetSync` (`+0xb60768`) also signals it, 22 times in two bursts during loading, and every
-one is surplus. Landing between fire and reset it is harmless (the reset clears it); landing
-between reset and the next arm it pre-pays the next cycle: the arm finds count 0 and sets state
-2 at once (`0x0` then `0x2`), the frame is released without waiting and the next frame's
-set-up job clears `[entry+0x28]` while this frame's jobs use it. Right before the fault:
-reset, `ProxySetSync` signal (`0xffffffff00000000`), arm completes at once, `+0xb61ac4` clears
-the entry, fault. Open question: what the PS4 delivers on event 6 that wakes `ProxySetSync`
-(every pipe 6 interrupt makes it signal once). Next: watch its target `obj+0x1f30`
-(`0x13ba91b0`) with `-IrqLog`.
-Eighth run (watch node + `obj+0x1f30`, `-IrqLog`): `obj+0x1f30` is a counter the frame jobs
-advance once per frame (`+0x57ecb9`), `obj+0x1f34` stays `0x17`. In the frames before the fault
-the cycle is: reset, arm, counter +1, `ProxySetSync` signal (fires), **a second
-`ProxySetSync` signal**. Pipe 6 queue 0 ends each frame with three RELEASE_MEMs (`int_sel=3`:
-a flag, a counter at `0x1100000070`, an offset at `0x1100000068`), all raising event 6, and
-`ProxySetSync` was woken twice. When the second signal lands after the reset, the next frame is
-pre-paid and the fault follows. On the PS4 the three come back to back and wake it once.
-Fix on `irq-burst-merge`: a merged interrupt moves the pending delivery to the delay after it,
-up to `ISS_ASC_IRQ_MERGE_MAX_US` (default 8000) after the first, so one burst is one wakeup.
-Also: hang reports now write the `-Dump` memory before the thread walk (the walk got stuck
-after a few threads again and the dumps were lost).
-Ninth run (`irq-burst-merge` built): still exit code 21. `ProxySetSync` now signals about once
-per frame, but the countdown is armed with 1 and in most frames a frame job (`+0x8030bc`)
-already gives that signal, so `ProxySetSync`'s is still surplus; in some frames it gives the
-expected one and then a second. So the countdown sometimes expects the GPU's signal and
-sometimes not. Suspect: how many signals the arm expects depends on GPU progress the game reads
-at arm time, and the port completes GPU work far earlier than the PS4 would. Next: code dumps of
-the arm (`+0x8b3e00`), the frame job's signal (`+0x8b41c0`) and `ProxySetSync` (`+0xb60700`).
-Tenth run, code dumps:
-- `ProxySetSync` (`+0xb60730`): wait on event 6; then, while `[obj+0x1f30]` (frame target) >
-  `table[obj+0x1f34]` (label, table pointer at `+0x16d3208`, 8-byte entries), spin; then
-  signal the countdown and wait again. One signal per wakeup once the label has caught up.
-- Arm (`+0x8b3e90`): `lock inc` count; if the state is 0 it becomes 1, or 2 at once when the
-  count is already <= 0 (a pre-paid countdown completes on arming).
-- `+0x8b4202`: the main thread signals the countdown itself **when `[+0x3bb6570]` is 0**;
-  otherwise it leaves that to `ProxySetSync`. So in most frames `ProxySetSync` must not signal
-  at all, and it does because the GPU wakes it at every frame end.
-- `-IrqLog`: graphics EOPs use `int_sel` 0 or 2; every compute RELEASE_MEM uses 3. On later AMD
-  GPUs 3 is "send data after write confirm" (no interrupt). shadPS4 raises an interrupt for 3.
-Test on `irq-burst-merge`: `ISS_ASC_SEL3_IRQ=0` drops interrupts for compute INT_SEL 3 (label
-still written). If the PS4 does not interrupt for 3, the surplus signals stop; if it does, frames
-with the flag set wait on `ProxySetSync` forever (a hang, main thread in the countdown wait).
+How to run (both use the tested settings, see "Settings the game needs"):
 
-Previous runs (`bitfield-insert64`, 2026-10-28): the GPU still hangs (`DEVICE LOST`, ~9 s) after
-compute shader `b5500bd4` starts running, though its SPIR-V now validates. Its waterfall loop
-terminates (it clears the lowest set bit of a 64-bit mask each pass) and its barriers sit in
-loops with uniform trip counts. The new clue: every dispatch logs
-`BindBuffers: Clamped size from 583 to 0 for stage 0xb5500bd4`, so a buffer is bound with 0 bytes
-at an address with no mapping. Its descriptors are chosen at run time from a table inside the
-loop (bindless: `Sharp dword N comes from Phi`), which the recompiler cannot resolve statically.
-Reads from the 0-byte buffer return nothing, and loops counting on that data likely never end.
-Real fix: bindless descriptor support for Phi-sourced sharps in the recompiler (large). **Now:**
-`skip-cs-diagnostic` adds `ISS_SKIP_CS=<hash>` to drop that shader's dispatches, to confirm it
-is the culprit and see what comes after. Nothing playable is drawn yet.
+- `pc-port\scripts\run_game.ps1 -HangReport 40` (or `Launch.cmd`): output in `run.log`,
+  per-frame timings in `frames.csv` (`-Profile` adds GPU timestamps;
+  `python pc-port/scripts/analyze_performance.py frames.csv`).
+- The launcher: `python pc-port/scripts/build_launcher.py` builds
+  `Ghost of Tsushima Launcher.exe` in the repo root; from a checkout it uses `pc-port\out`,
+  the prepared image there and `game_dir.txt`. Logs in `user\logs\<time>\`.
 
-Test machine: Windows, NVIDIA GPU (32-lane subgroups), the author's patch 2.18 dump, repo at
-`C:\Users\cuboi\Documents\GOT-port\got-pc-port`.
+## Settings the game needs
 
-## Open branches
+Defaults now (in the code or in `run_game.ps1` and the launcher's `kGameEnvironment`):
 
-| Branch | Fix | State |
-| --- | --- | --- |
-| `irq-burst-merge` (on `probe-regs`) | Exit code 21 at `+0xb64121` (frames overlapping): interrupts merged over a whole burst (`ISS_ASC_IRQ_MERGE_MAX_US`, `gpu/overrides/gnmdriver.cpp`), so `ProxySetSync` wakes once per frame | Built and run: `ProxySetSync` signals about once per frame now, but still surplus; still exit 21 |
-| `probe-regs` (on `skip-cs-diagnostic`) | `PROBE_EVENT` prints `r8`-`r11` and the accessed address; only the first faulting thread reports; `ISS_WATCH` write watchpoints (`src/probe.c`) | Register part built and run; `ISS_WATCH` pushed, not built yet |
-| `skip-cs-diagnostic` (on `bitfield-insert64`) | Diagnostic `ISS_SKIP_CS=<hex hash>[,...]`: drops compute dispatches of those shaders (both dispatch paths in `gpu/overrides/vk_rasterizer.cpp`), logs `SKIP_CS <hash>` once | Built and run: **confirmed**, title screen reached with `b5500bd4` skipped |
-| `bitfield-insert64` (on `sharp-source-readfirstlane`) | Invalid 64-bit `OpBitFieldInsert` in `b5500bd4`: `BitFieldInsert64` rebuilt from 64-bit shifts, AND and OR (`gpu/overrides/recompiler.cpp`, `LowerBitFieldInsert64`); `ShaderBinaryVersion` 11 | Built and run: SPIR-V validates now, but the GPU still hangs (see above) |
-| `sharp-source-readfirstlane` (on `bc5-ubnorm-nz`) | `IsSharpSource` assertion in `ResourceDiscoverPass`: T#/S# dwords read through `ReadFirstLane` are taken from its source, as V# dwords already were; any other unknown source is logged (`Sharp dword N comes from <opcode>`) and skipped instead of aborting. New override `gpu/overrides/resource_discover_pass.cpp` | Built and run: no abort, but the sources are Phi (not `ReadFirstLane`); the shader then likely hung the GPU |
-| `bc5-ubnorm-nz` (from `main`, PR #13) | `SurfaceFormat` assertion (data_format=39 BC5, num_format=11 `UbnormNz`): `UbnormNz` remapped to `Unorm` with the `UnormToUbnorm` conversion, like `Ubnorm`, in a shim copy of `video_core/amdgpu/pixel_format.h` (`gpu/shim` shadows shadPS4 headers) | Built and run: **fixed** (world tiles load) |
+| Setting | Why |
+| --- | --- |
+| Compute RELEASE_MEM with `INT_SEL 3` raises no interrupt (`ISS_ASC_SEL3_IRQ=1` restores it) | The game's compute fences all use 3 (graphics EOPs use 0 or 2). Raising an interrupt woke `ProxySetSync` at every frame end; it signalled the frame countdown in frames where the main thread already had, the next frame was released early and cleared a pointer the current frame still used (exit code 21 at `+0xb64121`). |
+| DMA on (`BB_DIRECT_MEMORY_ACCESS=0` turns it off), `ShaderBinaryVersion` 12 | Compute shader `b5500bd4` reads memory through pointers it computes (22 dynamic `ReadConst`). Without DMA each read became flatbuf dword 0 and the GPU hung (`DEVICE LOST`). DMA is not in the pipeline cache key: a cache made without it keeps the hang (hence the version bump). |
+| `ISS_UNIFIED_MEMORY=1`, `ISS_UNIFIED_RANGE=0x1500000000:0x56e00000` | The 1.39 GB heap of per-frame data is shared with the GPU in place: no write tracking or readbacks. Opening cutscene 11.7 -> 30 FPS. |
+| `ISS_FAULT_WINDOW_KB=64` | Fewer write faults: 7.2 -> 11.7 FPS before unified memory. |
+| Interrupt merging (`ISS_ASC_IRQ_DELAY_US` 1000, `ISS_ASC_IRQ_MERGE_MAX_US` 8000) | A burst of compute interrupts wakes the waiter once, as on the PS4. |
+| System language English (`ISS_LANGUAGE`, PS4 ids; the launcher's Language setting) | The default was 17 (Brazilian Portuguese) from the inFAMOUS port. |
 
-Merged 2026-10-28 (#8-#11, in this order of the stack):
+Not used for this game: the inFAMOUS port's tuned launcher set (fast draw paths, native passes,
+shader recipes, 240 Hz vblank, command processor pinned to CPU 14). None of it was tried here.
 
-| Branch | Fix | State |
-| --- | --- | --- |
-| `release-mem-irq-only` | Abort while loading the world (`pm4_cmds.h:1075` UNREACHABLE): compute RELEASE_MEM with DATA_SEL 0 (interrupt only, no write) raises the interrupt (`gpu/overrides/liverpool.cpp`, both RELEASE_MEM paths) | Built and run: **fixed** (next stop is the surface format) |
-| `wave32-inactive-lanes` | GPU hang on `ps 361a48f5`, second cause: shuffles and lane reads of inactive lanes outside compute shaders fall back to the lane's own value / the first active lane's (`GuardLaneReadsToActiveLanes`); `ShaderBinaryVersion` 10 | Built and run: **fixed** (no `DEVICE LOST`; the SPIR-V shows both guards and validates) |
-| `asc-irq-coalesce` | Black-screen deadlock: merge a delayed compute interrupt into one already pending for the same equeue event (`gpu/overrides/gnmdriver.cpp`, `IrqDelayer::Push`) | Built and run: **fixed** (spinner reached, main thread no longer stuck) |
-| `wave32-readlane` | GPU hang on NVIDIA, first cause: `v_readlane` of lanes 32-63 outside compute shaders reads the same lane within the host subgroup (`gpu/overrides/recompiler.cpp`, `ClampReadLanesToSubgroup`); `ShaderBinaryVersion` 9 | Built and run: needed but **not enough**, same draw still hangs |
+## Branches
 
-Merged: #1 launcher text and `.pkg` message, #2 launcher CI, #3 launcher warnings, #4 CI action
-versions and fonts, #5 GPU protection across neighbouring mappings (fixed the
-"GPU protection failed" crash).
+Everything up to the 30 FPS cutscene is on `irq-burst-merge`, a stack on `main`:
+`bc5-ubnorm-nz` (PR #13) -> `sharp-source-readfirstlane` -> `bitfield-insert64` ->
+`skip-cs-diagnostic` -> `probe-regs` -> `irq-burst-merge`. One PR merges the whole stack.
 
-`shader-dump` holds one dumped SPIR-V file from 2026-10-20 and is not part of this work.
+| Change | Where |
+| --- | --- |
+| BC5 `UbnormNz` surface format (was an assertion) | `gpu/shim/video_core/amdgpu/pixel_format.h` |
+| Sharp dwords through `ReadFirstLane`, unknown sources logged instead of asserting | `gpu/overrides/resource_discover_pass.cpp` |
+| 64-bit `BitFieldInsert` as shifts and masks (invalid SPIR-V before) | `gpu/overrides/recompiler.cpp` |
+| `ISS_SKIP_CS=<hash>[,...]` drops a compute shader's dispatches (diagnostic) | `gpu/overrides/vk_rasterizer.cpp` |
+| `PROBE_EVENT` with `r8`-`r11` and the faulting address, one report per crash; `ISS_WATCH` hardware write watchpoints; hang-report dumps before the thread walk | `src/probe.c` |
+| Interrupt burst merging; `INT_SEL 3` without interrupt | `gpu/overrides/gnmdriver.cpp`, `gpu/overrides/liverpool.cpp` |
+| DMA on by default | `gpu/shim/core/emulator_settings.h`, `vk_pipeline_serialization.cpp` |
+| Real unmap (texture streaming maps and unmaps 64 KiB blocks; a fixed remap failed, then exit 21) | `src/memory.c`, `gpu/bridge.cpp` (`iss_gpu_unmap`), test in `tests/runtime_test.c` |
+| English by default | `src/services.c` |
+| `run_game.ps1`: `frames.csv`, `-Profile`, tested settings; launcher: tested settings, works from a checkout | `pc-port/scripts/run_game.ps1`, `pc-port/launcher/launcher.cpp` |
+
+Merged before: #1-#5 (launcher, CI, GPU protection across mappings), #8-#11 (wave32 lane reads,
+inactive lanes, interrupt coalescing, RELEASE_MEM with DATA_SEL 0). `shader-dump` holds one
+dumped SPIR-V file from 2026-10-20 and is not part of this work.
 
 ## Next step
 
-1. Run without the skip, with `BB_DIRECT_MEMORY_ACCESS=1` and `BB_PIPELINE_CACHE=0`. If the
-   GPU no longer hangs, make DMA the default for this game and bump `ShaderBinaryVersion`.
-2. If it still hangs, the real fix for `b5500bd4`: resolve Phi-sourced sharps (bindless T#/V# from a descriptor table) in
-  `ResourceDiscoverPass` / `FlattenExtendedUserdataPass` / `ResourcePatchingPass`, e.g. by
-  binding the descriptor table as a buffer and building the descriptor in the shader.
+1. The first gameplay scene draws only sky and a flat plane at 1.3 FPS: get `run.log`, a
+   `-Profile` summary and a hang report from there.
+2. `b5500bd4` still binds one buffer it picks at run time with 0 bytes
+   (`BindBuffers: Clamped size ... to 0 for stage 0xb5500bd4`; its V# comes from a Phi,
+   `Sharp dword N comes from Phi`). DMA fixed the hang, but whatever that buffer feeds may be
+   wrong. A full fix resolves Phi-sourced sharps (bindless) in `ResourceDiscoverPass` /
+   `FlattenExtendedUserdataPass` / `ResourcePatchingPass`.
+3. Known tooling bug: the hang report's thread walk often stops partway (in `runtime_report_*`,
+   `src/runtime.c`); it probably suspends a thread that holds a lock it then needs.
 
-## Findings
-
-### Black screen: frame job never released (intermittent)
+## Findings worth keeping
 
 Addresses are image offsets in the patch 2.18 eboot (`+0x...` in hang reports).
 
-- **Main thread** spins at `+0x8035d2` (chain `+0x8b9dd8 +0x89c145 +0x893d12`). It is a job-group
-  wait (`0x803570`-`0x8035eb`): it runs a job itself when it can take one, otherwise it spins
-  about 1 µs on `rdtsc`, and it leaves when `[r13+4]` (jobs remaining, `r13 = 0x13bb6590`)
-  reaches 0. In the hangs it stays at 1. All `JobWorker` threads are idle.
-- **Sync node** at `0x13bb64e0`: `+0` state (0 reset, 1 armed, 2 done), `+4` count, `+0x10`
-  mutex, `+0x20` callback, `+0x30/+0x38` children. In the hangs: state 1, count -2 to -5.
-  In the run that reached the spinner: 0/0.
-  - `0x803a00` **signal**: `lock dec [node+4]`; it fires (state 2, callback, children) only when
-    the count lands exactly on 0 with state 1. Past 0 it can never fire.
-  - `0x803870` **reset**: clears state and count (`movq $0,(node)`) and the child list.
-  - The arm site is not found yet.
-- **`ProxySetSync`** thread, object `0x13ba7280` (node = object + `0xf260`), loop at
-  `0xb60730`-`0xb6081c`:
+### Frame countdown and `ProxySetSync`
 
-      again: signal(node)
-             sceKernelWaitEqueue(eq = [obj+0xf420])          ; pipe 6 interrupts (event id 0x6)
-      check: if obj[0x1f30] (=3) <= table[obj[0x1f34] (=0x17)] goto again   ; table ptr at +0x16d3208
-             spin 20 µs; goto check
+- **Countdown** at `0x13bb64e0` (8 bytes: low dword state 0 reset / 1 armed / 2 done, high
+  dword count). Arm `+0x8b3e90`: `lock inc` count; state 1, or 2 at once if the count is
+  already <= 0 (pre-paid). Signal `0x803a00`: `lock dec`, fires only when it lands on 0 with
+  state 1. Reset `+0x8038f7`: writes 0.
+- `+0x8b4202`: the main thread signals the countdown itself when `[+0x3bb6570]` is 0; otherwise
+  `ProxySetSync` does.
+- **`ProxySetSync`** (`+0xb60730`, object `0x13ba7280`): waits on equeue event 6 (pipe 6
+  interrupts); then spins until `table[obj+0x1f34]` (label; table pointer at `+0x16d3208`,
+  8-byte entries) >= `obj+0x1f30` (a target the frame jobs advance at `+0x57ecb9`); then signals
+  once. Every surplus wakeup is a surplus signal; landing after a reset it pre-pays the next
+  frame. That caused both the black-screen deadlock (count below 0) and the exit code 21 race.
+- Job-group wait on the main thread: `0x803570`-`0x8035eb` (`[r13+4]` jobs remaining).
 
-  It signals exactly once per wakeup, and `obj[0x1f30]` is never advanced in the loop.
-- **Interrupts:** every pipe 6 RELEASE_MEM uses `int_sel=3` (undocumented; shadPS4 raises an
-  interrupt for it, as for 2), about 10 in a burst to slots 0x110 apart. `IrqDelayer`
-  (default `ISS_ASC_IRQ_DELAY_US=1000`) delivered each one separately, so one burst woke
-  `ProxySetSync` several times and over-signalled the node. With the delay at 5000 the count
-  went further below zero (-5), which fits leaked interrupts more than late arming.
-  The equeue itself already merges triggers (`EqueueEvent::Trigger` only sets `is_triggered`);
-  the delayer is where they were kept apart. Hence `asc-irq-coalesce`.
-- The comment above `IrqDelayer` (written before this analysis) explains why the delay exists:
-  with immediate delivery the node was signalled before it was armed.
+### Wave32 on NVIDIA
 
-### GPU hang at the loading spinner (fix on `wave32-readlane`)
+`v_readlane` of lanes 32-63 and shuffles from inactive lanes are undefined on 32-lane
+subgroups; `ClampReadLanesToSubgroup` and `GuardLaneReadsToActiveLanes` fix them outside compute
+shaders (the loading spinner's `ps 361a48f5` hung the GPU). shadPS4's `LowerWave64BallotPass`
+only handles compute shaders.
 
-`GPU_BLACKBOX DEVICE LOST` on draw `vs 9911cadd ps 361a48f5`, 513x513, rendering into an image it
-also samples. The pixel shader's only loop takes a wave minimum with `ShuffleXor` 16/8/4/2/1 and
-`OpGroupNonUniformBroadcast` of lanes 31 and 63, and exits when the minimum reaches 255. Lane 63
-does not exist in a 32-lane subgroup, so the loop never ended. shadPS4's `LowerWave64BallotPass`
-only rewrites compute shaders. With that fixed (lane 31), the same draw still hung after 40 s
-(2026-10-28 run). Second cause: along the odd 513-pixel edge, partial quads and warps leave
-source lanes inactive, and Vulkan leaves shuffles and broadcasts from them undefined; a stale
-value below 255 keeps the minimum there. On the PS4 the game's code can mask those lanes off,
-which shadPS4's translation cannot express. Fixed on `wave32-inactive-lanes` (confirmed: the run
-went on to load the world).
+### Memory
 
-### Crash "GPU protection failed" (fixed, #5)
+- Direct mappings: `0x1000000000` (384 MB), `0x1100000000` (332 MB: command rings, labels),
+  `0x1200000000` (1.1 GB), `0x1500000000` (1.39 GB, per-frame data, double-buffered),
+  `0x2000000000`, `0x3000000000`, and 64 KiB texture-streaming blocks in `0x14xxxxxxxx`.
+- Each arena mapping is its own `MapViewOfFile3` view; `VirtualProtect` cannot cross views
+  (`memory_gpu_protect` protects region by region, #5). Unmap returns the view to a placeholder
+  merged with its free neighbours.
 
-Since the guest address arena, each mapping is its own `MapViewOfFile3` view and neighbouring
-mappings are adjacent; `VirtualProtect` cannot cross views. `memory_gpu_protect` now protects
-region by region.
+## Diagnostics
 
-## Reading hang reports
-
-- Known bug (2026-10-28): after the GPU hung, two reports in a row stopped after 7 lines,
-  while sampling `AK::LibAudioOut` inside `SDL3.dll`. The writer probably suspends a thread that
-  holds a lock it then needs (heap or loader lock). Fix in `runtime_report_*` (`src/runtime.c`):
-  avoid allocating or resolving modules while a thread is suspended.
-- `-HangReport 40` rewrites `pc-port\out\hang-report.txt` every 40 s. Copy it before Ctrl+C, or
-  the report can be cut off mid-write.
-- `-Dump "+<image offset>:<bytes>,<address>:<bytes>,*<address>:<bytes>"` (`*` follows a pointer);
-  `-DumpReg "<thread>:<reg>:<bytes>"`. Code dumps disassemble with
-  `objdump -D -b binary -mi386:x86-64 --adjust-vma=<offset>`.
-- `run.log` (repo root) is still being written while the game runs; take it after the game exits.
-- `BB_DUMP_SHADERS=1` dumps shaders only when they compile. Cached ones are in
-  `pc-port\out\user\gpu-14\CUSA11456\<hash>_0.spv`.
-- After a `ShaderBinaryVersion` bump the first run recompiles everything (hundreds of compiles,
-  black screen for minutes). Judge a fix on the second run.
+- `-HangReport 40` rewrites `pc-port\out\hang-report.txt` every 40 s; copy it before Ctrl+C.
+- `-Dump "+<image offset>:<bytes>,<address>:<bytes>,*<address>:<bytes>"` (`*` follows a
+  pointer); `-DumpReg "<thread>:<reg>:<bytes>"`. The dumps come first in the report. Code
+  disassembles with `objdump -D -b binary -mi386:x86-64 --adjust-vma=<offset>`.
+- `ISS_WATCH=<addr>[,...]` (up to 4, 8-byte aligned): a `WATCH` line in `run.log` for every
+  write, with the writer and its call chain. It changes timing.
+- `PROBE_EVENT` (exit code 21) carries the faulting address and registers; `-IrqLog` logs
+  interrupts and compute fences (`GNM_IRQ`, `ASC_RELEASE_MEM`, `GFX_EOP`).
+- `ISS_SKIP_CS=<hash>` drops a compute shader to test whether it causes a hang.
+- `run.log` is written while the game runs; take it after the game exits. `gpu-crash.txt`
+  is only rewritten by a new GPU crash: check its time.
+- `BB_DUMP_SHADERS=1` dumps shaders when they compile; cached ones are in
+  `pc-port\out\user\gpu-14\CUSA11456\<hash>_0.spv`. After a `ShaderBinaryVersion` bump the
+  first run recompiles everything (minutes of black screen); judge on the second run.
